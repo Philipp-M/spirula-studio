@@ -1822,6 +1822,33 @@ SS_MSG(opt_resolution_native,
     PT("original"),      IT("originale"),    NL("origineel"),    RU("исходное"),
     TR("özgün"));
 
+SS_MSG(opt_resolution_custom,
+    EN("Custom"), JA("カスタム"), ZH_HANS("自定义"), ZH_HANT("自訂"),
+    KO("사용자 지정"), DE("Benutzerdefiniert"), FR("Personnalisé"),
+    ES("Personalizado"), PT("Personalizado"), IT("Personalizzato"),
+    NL("Aangepast"), RU("Свой"), TR("Özel"));
+
+SS_MSG(opt_resolution_scale,
+    EN("Image scale"), JA("画像の倍率"), ZH_HANS("图像缩放比例"), ZH_HANT("影像縮放比例"),
+    KO("이미지 배율"), DE("Bildskalierung"), FR("Échelle de l'image"),
+    ES("Escala de imagen"), PT("Escala da imagem"), IT("Scala immagine"),
+    NL("Beeldschaal"), RU("Масштаб изображений"), TR("Görüntü ölçeği"));
+
+SS_MSG(opt_resolution_scale_help,
+    EN("Scale each side of the input images by a value greater than 0 and at most 1. For example, 0.7 uses 70% of the original width and height; 1 uses the original size."),
+    JA("入力画像の各辺に、0 より大きく 1 以下の値を掛けます。例えば 0.7 は元の幅と高さの 70%、1 は元のサイズです。"),
+    ZH_HANS("将输入图像的每边乘以大于 0 且不超过 1 的值。例如，0.7 使用原始宽度和高度的 70%，1 使用原始尺寸。"),
+    ZH_HANT("將輸入影像的每邊乘以大於 0 且不超過 1 的值。例如，0.7 使用原始寬度和高度的 70%，1 使用原始尺寸。"),
+    KO("입력 이미지의 각 변에 0보다 크고 1 이하인 값을 곱합니다. 예를 들어 0.7은 원본 너비와 높이의 70%를 사용하고, 1은 원본 크기를 사용합니다."),
+    DE("Jede Seite der Eingabebilder mit einem Wert größer als 0 und höchstens 1 skalieren. Zum Beispiel verwendet 0.7 jeweils 70% der ursprünglichen Breite und Höhe; 1 verwendet die Originalgröße."),
+    FR("Multiplie chaque côté des images d'entrée par une valeur supérieure à 0 et au plus égale à 1. Par exemple, 0.7 utilise 70% de la largeur et de la hauteur d'origine ; 1 conserve la taille d'origine."),
+    ES("Multiplica cada lado de las imágenes de entrada por un valor mayor que 0 y como máximo 1. Por ejemplo, 0.7 usa el 70% del ancho y alto originales; 1 usa el tamaño original."),
+    PT("Multiplica cada lado das imagens de entrada por um valor maior que 0 e no máximo 1. Por exemplo, 0.7 usa 70% da largura e altura originais; 1 usa o tamanho original."),
+    IT("Moltiplica ogni lato delle immagini in ingresso per un valore maggiore di 0 e al massimo 1. Ad esempio, 0.7 usa il 70% della larghezza e dell'altezza originali; 1 usa le dimensioni originali."),
+    NL("Schaal elke zijde van de invoerbeelden met een waarde groter dan 0 en maximaal 1. Bijvoorbeeld: 0.7 gebruikt 70% van de oorspronkelijke breedte en hoogte; 1 gebruikt de oorspronkelijke grootte."),
+    RU("Умножает каждую сторону исходных изображений на значение больше 0 и не больше 1. Например, 0.7 использует 70% исходной ширины и высоты; 1 сохраняет исходный размер."),
+    TR("Girdi görüntülerinin her kenarını 0'dan büyük ve en fazla 1 olan bir değerle ölçekler. Örneğin 0.7, özgün genişlik ve yüksekliğin %70'ini kullanır; 1 özgün boyutu kullanır."));
+
 SS_MSG(opt_resolution_help,
     EN("Train at a fraction of the input resolution. Downscaling trains much "
        "faster and saves VRAM; use it for 4K+ footage or quick previews."),

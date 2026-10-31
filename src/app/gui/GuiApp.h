@@ -761,6 +761,7 @@ private:
     // the options editor's "preset default" tooltips are relative to.
     std::string _preset = "3dgs";
     ConfigUIState _cfg_ui;
+    bool _custom_resolution = false;
     // Persisted: the last value the user gave save_full_checkpoint by hand. A
     // preset only overrides it by turning it on.
     bool _keep_full_ckpt = false;

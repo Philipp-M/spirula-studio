@@ -7,6 +7,7 @@
 #include "core/ExrImage.h"
 #include "core/HardwareThreads.h"
 #include "core/ImageOrient.h"
+#include "core/LanczosResize.h"
 #include "core/TiffImage.h"
 #include "data/ImageProbe.h"
 #include "data/ResolutionSchedule.h"
@@ -207,26 +208,7 @@ using StepSpec = std::vector<SubBatchSpec>;
 // Image decoders
 // ===========================================================================
 //
-// All decoders write directly into a pre-allocated batch slot `dst` (pointer
-// to the start of row 0 of this image's slot in the [B,H,W,C] buffer).
-//
-// `expected_h`, `expected_w` are the IndexGroup's promised dimensions. If the
-// decoded image disagrees, the decoder warns (once per IndexGroup, keyed on
-// the expected (W,H) pair) and bilinearly resizes the image into the slot,
-// matching how mask / depth / normal already handle intra-group shape
-// drift. Matches the gsplat / nerfstudio convention of accepting off-by-one
-// downscale dims (e.g. Mip-NeRF 360 images_(2|4) round vs. floor).
-
 // ---- CPU resize helpers ---------------------------------------------------
-//
-// Used by the decoders and the CPU-cache copy path. Mismatched intra-group
-// modality shapes are resolved by upsampling smaller files to the group's
-// chosen (largest) shape:
-//   mask   -> nearest (boolean; bilinear would round badly at edges)
-//   depth  -> bilinear (smooth scalar field)
-//   normal -> bilinear per channel
-// All resizers use half-pixel-center sampling, matching the device-side
-// bilinear sampler in Interpolation.cuh.
 
 template<typename T, int C>
 inline void cpu_bilinear_resize(const T* src, int sh, int sw,
@@ -306,10 +288,9 @@ inline void cpu_area_resize(const T* src, int sh, int sw,
     }
 }
 
-// A 2-tap bilinear shrinking 4x reads one source pixel in four and aliases the
-// rest away, which is exactly what train_resolution_divisor 4 and 8 ask for.
+// Coverage must stay monotone before alpha thresholding; Lanczos has negative lobes.
 template<typename T, int C>
-inline void cpu_resize(const T* src, int sh, int sw, T* dst, int dh, int dw)
+inline void cpu_coverage_resize(const T* src, int sh, int sw, T* dst, int dh, int dw)
 {
     if (dh <= sh && dw <= sw && (dh < sh || dw < sw))
         cpu_area_resize<T, C>(src, sh, sw, dst, dh, dw);
@@ -334,15 +315,14 @@ inline void cpu_nearest_resize_u8(const uint8_t* src, int sh, int sw,
 }
 
 
-// One cached RGB row (sh x sw) area-filtered into dst (dh x dw), in its own dtype.
 inline void resize_rgb_row(const uint8_t* src, int sh, int sw, uint8_t* dst, int dh, int dw,
                            PixelDType dt) {
     if (dt == PixelDType::FLOAT32)
-        cpu_resize<float, 3>((const float*)src, sh, sw, (float*)dst, dh, dw);
+        spirula::resize_lanczos3<float, 3>((const float*)src, sh, sw, (float*)dst, dh, dw);
     else if (dt == PixelDType::UINT16)
-        cpu_resize<uint16_t, 3>((const uint16_t*)src, sh, sw, (uint16_t*)dst, dh, dw);
+        spirula::resize_lanczos3<uint16_t, 3>((const uint16_t*)src, sh, sw, (uint16_t*)dst, dh, dw);
     else
-        cpu_resize<uint8_t, 3>(src, sh, sw, dst, dh, dw);
+        spirula::resize_lanczos3<uint8_t, 3>(src, sh, sw, dst, dh, dw);
 }
 
 // Modality decoders. `dst_h` / `dst_w` are the BATCH-slot shape (= group
@@ -426,7 +406,7 @@ void place_rgb(const std::string& path, const T* src, int w, int h, int turns_cw
         std::memcpy(dst, src, (size_t)w * h * 3 * sizeof(T));
     } else {
         _warn_rgb_dim_mismatch_once(path, w, h, expected_w, expected_h);
-        cpu_resize<T, 3>(src, h, w, (T*)dst, expected_h, expected_w);
+        spirula::resize_lanczos3<T, 3>(src, h, w, (T*)dst, expected_h, expected_w);
     }
 }
 
@@ -607,7 +587,7 @@ void decode_alpha_mask_into(const std::string& path,
     turn_decoded(src, w, h, 1, turns_cw, turned);
     if (w != dst_w || h != dst_h) {
         resized.resize((size_t)dst_h * dst_w);
-        cpu_resize<stbi_uc, 1>(src, h, w, resized.data(), dst_h, dst_w);
+        cpu_coverage_resize<stbi_uc, 1>(src, h, w, resized.data(), dst_h, dst_w);
         src = resized.data();
     }
     for (size_t i = 0; i < (size_t)dst_h * dst_w; ++i)
@@ -892,7 +872,7 @@ private:
     // Per-image, the decoded payload. Empty for images that don't have the
     // modality on disk. For DISK mode these stay empty.
     std::vector<std::vector<uint8_t>> _rgb_cache;
-    // The same rows area-filtered per progressive divisor, built at preload so
+    // The same rows Lanczos-filtered per progressive divisor, built at preload so
     // the step does not pay for the filter; a stage's rows go once it is passed.
     std::map<int, std::vector<std::vector<uint8_t>>> _rgb_cache_scaled;
     std::vector<std::vector<uint8_t>> _mask_cache;

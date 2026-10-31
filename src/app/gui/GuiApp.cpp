@@ -11503,20 +11503,38 @@ void GuiApp::draw_basic_options() {
             ui::TextColoredWrapped(kWarn, msg::opt_primitive_3dgut_warn);
     }
 
-    int ds_idx = _cfg.train_resolution_divisor == 2.0f ? 1
+    int ds_idx = _custom_resolution ? 4
+               : _cfg.train_resolution_divisor <= 1.0f ? 0
+               : _cfg.train_resolution_divisor == 2.0f ? 1
                : _cfg.train_resolution_divisor == 4.0f ? 2
-               : _cfg.train_resolution_divisor == 8.0f ? 3 : 0;
+               : _cfg.train_resolution_divisor == 8.0f ? 3 : 4;
     {
-        // "1/2" is a fraction, not a word; only "native" is translated.
-        const char* items[] = {msg::opt_resolution_native.get(), "1/2", "1/4", "1/8"};
+        const char* items[] = {msg::opt_resolution_native.get(), "1/2", "1/4", "1/8",
+                               msg::opt_resolution_custom.get()};
         ImGui::SetNextItemWidth(w);
-        if (ui::ComboRaw(ui::detail::label(msg::opt_resolution), &ds_idx, items, 4)) {
-            const float vals[] = {0.0f, 2.0f, 4.0f, 8.0f};
-            _cfg.train_resolution_divisor = vals[ds_idx];
-            _cfg_ui.touched.insert("train_resolution_divisor");
+        if (ui::ComboRaw(ui::detail::label(msg::opt_resolution), &ds_idx, items, 5)) {
+            _custom_resolution = ds_idx == 4;
+            if (!_custom_resolution) {
+                const float vals[] = {0.0f, 2.0f, 4.0f, 8.0f};
+                _cfg.train_resolution_divisor = vals[ds_idx];
+                _cfg_ui.touched.insert("train_resolution_divisor");
+            }
         }
     }
     ui::help_on_hover(msg::opt_resolution_help);
+    if (ds_idx == 4) {
+        float scale = _cfg.train_resolution_divisor > 1.0f
+            ? 1.0f / _cfg.train_resolution_divisor : 1.0f;
+        ImGui::SetNextItemWidth(w);
+        if (ui::InputFloat(msg::opt_resolution_scale, &scale, 0, 0, "%.5g") &&
+            std::isfinite(scale) && scale > 0.0f && scale <= 1.0f &&
+            std::isfinite(1.0f / scale)) {
+            _custom_resolution = true;
+            _cfg.train_resolution_divisor = 1.0f / scale;
+            _cfg_ui.touched.insert("train_resolution_divisor");
+        }
+        ui::help_on_hover(msg::opt_resolution_scale_help);
+    }
 
 #if 0
     if (ui::Checkbox(fld::progressive_resolution, &_cfg.progressive_resolution))

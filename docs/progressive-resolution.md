@@ -119,7 +119,7 @@ fits, train it briefly without progressive resolution first, or lower it.
 
 ## What changes, and what does not
 
-- Each training batch's colour images are area-filtered down, and the camera
+- Each training batch's colour images are Lanczos3-filtered down, and the camera
   intrinsics are scaled to match exactly. For wide lenses that are split into
   pinhole faces, the faces render smaller and the source camera, including
   fitted lens models, is scaled with its image.

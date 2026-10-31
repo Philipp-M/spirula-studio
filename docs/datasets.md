@@ -609,6 +609,18 @@ images' own size. This is the "train smaller to go faster" knob — the GUI's
 Image resolution combo writes it — and it is relative to the images, not to the
 reconstruction.
 
+The GUI also offers **Custom** with an image scale in `(0, 1]`: `0.7` uses
+70% of each side. Custom scales are saved with training presets and runs.
+The CLI accepts fractional divisors through `--train-resolution-divisor`;
+for a scale of `0.7`, use `--train-resolution-divisor 1.4285714` (`1 / 0.7`).
+
+RGB resizing uses separable Lanczos3 filtering for presets, custom scales and
+progressive resolution on both backends. The filter widens during downscaling
+to suppress aliasing. Integer images are clamped and rounded after both passes;
+floating-point HDR values retain their range. Alpha coverage keeps area
+averaging before thresholding; binary masks, depth and normals keep their
+existing sampling rules.
+
 A caller with no image decoders leaves `probe_image_size` null and gets the
 reconstruction's resolution unchanged; the WebAssembly viewer does exactly that.
 

@@ -1,6 +1,6 @@
 // progressive_resolution_test -- the resolution schedule (data/ResolutionSchedule.h)
 // and the batches DataManager builds from it in both cache modes: sizes,
-// intrinsics and area-filtered pixels per epoch. Host only.
+// intrinsics and Lanczos-filtered pixels per epoch. Host only.
 
 #include "data/DataManager.h"
 #include "data/ResolutionSchedule.h"
@@ -133,7 +133,7 @@ void data_manager(const std::string& image, CacheMode mode, const char* name) {
             if (b.resolution_divisor == 2) {
                 ++halves;
                 shapes &= b.width == 4 && b.intrins == std::vector<float>{5.0f, 6.0f, 2.0f, 1.5f} &&
-                          b.rgb_buffer.size() == 4 * 4 * 3 && std::abs(b.rgb_buffer[3] - 50) <= 1;
+                          b.rgb_buffer.size() == 4 * 4 * 3 && b.rgb_buffer[3] == 49;
             } else {
                 ++fulls;
                 shapes &= b.width == W && b.intrins[0] == 10.0f && b.rgb_buffer[3] == 20;
@@ -151,15 +151,17 @@ void data_manager(const std::string& image, CacheMode mode, const char* name) {
         auto dm = make(0);
         const DecodedBatch& half = *dm->next_train_step().subs[0];
         bool pixels = half.rgb_buffer.size() == 4 * 4 * 3;
+        // Pillow 12.3.0 Lanczos3 on the eight-pixel 0..140 gradient, rounded to uint8.
+        const int gradient[] = {10, 49, 91, 130};
         for (int y = 0; y < 4 && pixels; ++y)
             for (int x = 0; x < 4; ++x) {
                 const uint8_t* p = &half.rgb_buffer[((size_t)y * 4 + x) * 3];
-                pixels &= std::abs(p[0] - (40 * x + 10)) <= 1 && std::abs(p[1] - (40 * y + 10)) <= 1 && p[2] == 7;
+                pixels &= p[0] == gradient[x] && p[1] == gradient[y] && p[2] == 7;
             }
         check(half.width == 4 && half.height == 4 && half.input_width == 4 && half.resolution_divisor == 2,
               tag + "epoch 0 trains at half size");
         check(half.intrins == std::vector<float>{5.0f, 6.0f, 2.0f, 1.5f}, tag + "intrinsics follow the image");
-        check(pixels, tag + "pixels are 2x2 area averages");
+        check(pixels, tag + "pixels match Lanczos3 reference values");
         check(dm->last_train_divisor() == 2, tag + "the divisor handed out is reported");
         const DecodedBatch& full = *dm->next_train_step().subs[0];
         check(full.width == W && full.resolution_divisor == 1 && full.intrins[0] == 10.0f &&

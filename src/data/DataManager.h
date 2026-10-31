@@ -163,7 +163,7 @@ struct DecodedBatch {
     int32_t                height = 0;     // post-split H
     int32_t                num    = 0;     // post-split B (= input B * K)
     // Progressive-resolution divisor this batch was scaled by (1 = loaded size).
-    // Its RGB is the group's input image area-filtered to input_width x input_height.
+    // Its RGB is Lanczos3-filtered to input_width x input_height.
     int32_t                resolution_divisor = 1;
     CameraModelType        model  = (CameraModelType)-1;   // PINHOLE when K>1
     CameraDistortionType   distortion = CameraDistortionType::None;  // None when K>1
