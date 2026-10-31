@@ -269,6 +269,8 @@ std::optional<SlotClass> classify(const std::string& name) {
     }
     if (name == "eng.radii")        { SlotClass c; c.ch = 1; return c; }
     if (name == "eng.accum_buffer") { SlotClass c; c.ch = 2; return c; }
+    if (name == "eng.projective_state") { SlotClass c; c.ch = 4; return c; }
+    if (name == "eng.projective_information") { SlotClass c; c.ch = 1; return c; }
     if (name == "eng.bias_correction_steps") {
         SlotClass c; c.ch = 1; c.is_int = true; return c;
     }
