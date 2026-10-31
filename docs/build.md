@@ -16,6 +16,31 @@ compiling its own copy.
 
 Always build through the dev scripts.
 
+## Nix
+
+The flake packages the Vulkan GUI and CLI, including SfM, segmentation and
+geometry estimation, for `x86_64-linux` and `aarch64-linux`.
+
+```bash
+nix run .                       # open the GUI
+nix run . -- --help              # list CLI commands
+nix run . -- train --help        # trainer options
+nix build .                     # result/bin/spirula
+```
+
+Enable Nix's `nix-command` and `flakes` experimental features. The first run
+builds the application and its shaders from source. `flake.lock` pins nixpkgs;
+GLFW, ImGui and the project's pinned Slang compiler are fetched with hashes,
+so compilation needs no network access. The package uses committed codegen
+output and builds through `build_develop.bash`.
+
+The package supplies ffmpeg, curl, desktop integration and the GUI libraries.
+A working Vulkan GPU driver must be installed on the host; on NixOS enable
+`hardware.graphics.enable`. On other Linux distributions, a matching
+[nixGL](https://github.com/nix-community/nixGL) wrapper may be needed to expose
+the host's graphics drivers. Model weights are downloaded at runtime through
+the application's existing licence prompts. `SS_ENABLE_PATENTED` stays off.
+
 ## CMake layout
 
 `CMakeLists.txt` is just the running order; the logic lives in `cmake/`:
