@@ -8,8 +8,40 @@ void write_report(const std::filesystem::path& output,const std::string& manifes
     std::ofstream out(output/"index.html");
     out << R"HTML(<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Photograph alignment review</title><style>
-:root{color-scheme:dark;font:15px system-ui;background:#11151b;color:#e1e8f0}body{max-width:1800px;margin:auto;padding:24px}h1{font-size:28px}p{max-width:1000px;line-height:1.6;color:#aebccc}a{color:#8dc8ff}header{border-bottom:1px solid #344151;padding-bottom:20px}article{margin:28px 0 48px;padding:20px;background:#1b232e;border:1px solid #344151;border-radius:12px}h2{font-size:18px;overflow-wrap:anywhere}.controls{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:16px 0}.controls label{display:flex;align-items:center;gap:8px}input[type=range]{width:210px;accent-color:#76baff}.pair{display:grid;grid-template-columns:repeat(var(--panes,2),minmax(0,1fr));gap:12px}.pane{overflow:auto;max-height:80vh;background:repeating-conic-gradient(#283341 0% 25%,#18202b 0% 50%) 0/18px 18px}.stage{position:relative;width:100%}.stage img{display:block;width:100%;height:auto}.stage .render,.stage .mask{position:absolute;inset:0;width:100%;height:100%}.render{opacity:.5}.mask{opacity:0;mix-blend-mode:screen}figcaption{margin:6px 0;min-height:2.5em;color:#bac8d8}.score-table{width:100%;border-collapse:collapse;margin:15px 0;font-variant-numeric:tabular-nums}.score-table td,.score-table th{text-align:left;border-bottom:1px solid #344151;padding:10px}.metrics{font-variant-numeric:tabular-nums;color:#aebccc;line-height:1.7}.error{color:#ffb0a6}button{background:#31445e;color:white;border:0;border-radius:5px;padding:7px;cursor:pointer}footer{margin:35px 0;color:#aebccc}@media(max-width:800px){.pair{grid-template-columns:1fr}body{padding:10px}}
-</style><header><h1>Photograph alignment review</h1><p>Original and corrected photographs at the same camera pose. Move the blend slider from photograph to splat render, zoom into detail, or inspect native photograph detail. Both panels scroll together. Red marks absent warp coverage; blue marks exclusions from the original mask. Corrections use original photographic pixels; rendered colors are never inserted into the output.</p><p id="summary"></p><p>Correlation scores check reserved patches within these photographs against the reference model. They do not measure independent 3D accuracy. Matching and the reference render use working resolution; output photographs retain native dimensions. Native detail loads the original-resolution photographs. Excluded pixels in native RGB output appear black; the mask overlay identifies their cause.</p><a href="manifest.json">Manifest and settings</a></header><main id="views"></main><footer>White training mask = usable evidence; black = ignored. Use Spirula’s “Ignore distractors” mask mode. Only missing warp coverage and transported source masks exclude pixels. Matching confidence never creates holes.</footer><script>
+:root{color-scheme:dark;font:15px system-ui;background:#11151b;color:#e1e8f0}
+*{box-sizing:border-box}
+body{max-width:1800px;margin:auto;padding:24px}
+h1{font-size:28px}h2{font-size:17px;overflow-wrap:anywhere}
+p{max-width:1100px;line-height:1.6;color:#aebccc}a{color:#8dc8ff}
+header{border-bottom:1px solid #344151;padding-bottom:16px}
+article{margin:24px 0 40px;padding:20px;background:#1b232e;border:1px solid #344151;border-radius:12px}
+.controls{display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;margin:14px 0}
+.controls label{display:flex;align-items:center;gap:8px;font-size:14px}
+select,button{font:inherit;background:#26354a;color:#e1e8f0;border:1px solid #415570;border-radius:6px;padding:7px 10px}
+select{max-width:100%}button{cursor:pointer}button:hover,button.active{background:#395778;border-color:#8fcaff}
+input[type=range]{width:190px;accent-color:#76baff;cursor:ew-resize}
+input[type=checkbox]{accent-color:#76baff}input:disabled{opacity:.4;cursor:default}
+output{min-width:3em;font-variant-numeric:tabular-nums}
+.toolbar{position:sticky;top:0;z-index:10;background:#11151bf2;backdrop-filter:blur(10px);padding:12px 14px;border:1px solid #415570;border-radius:8px;box-shadow:0 5px 20px #0005}
+.endpoints{justify-content:center;margin:8px 0}.endpoints button{font-size:13px}
+.comparison-figure{margin:0}
+figcaption{margin:10px 0;font-size:13px;color:#bac8d8;min-height:1.5em}
+.pane{overflow:auto;max-height:75vh;position:relative;background:repeating-conic-gradient(#283341 0% 25%,#18202b 0% 50%) 0/18px 18px;border-radius:5px}
+.stage{position:relative;margin:0 auto;background:#000;isolation:isolate;min-height:1px}
+.layer{position:absolute;inset:0;background:#000}
+.layer img,.exclusions{display:block;width:100%;height:100%;object-fit:fill;user-select:none}
+.exclusions{position:absolute;inset:0;opacity:0;mix-blend-mode:screen;pointer-events:none}
+.divider{position:absolute;inset-block:0;width:2px;background:white;box-shadow:0 0 3px #000;pointer-events:none}
+.divider span{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#111b;border:2px solid white;font-size:20px}
+.wipe{touch-action:none;cursor:ew-resize}
+[hidden]{display:none!important}
+.score-table{width:100%;border-collapse:collapse;margin:15px 0;font-variant-numeric:tabular-nums}
+.score-table td,.score-table th{text-align:left;border-bottom:1px solid #344151;padding:10px}
+.metrics{font-size:13px;font-variant-numeric:tabular-nums;color:#aebccc;line-height:1.7}
+.asset-links{font-size:13px}.error{color:#ffb0a6}details{margin-top:14px}summary{cursor:pointer}
+footer{margin:35px 0;color:#aebccc;font-size:13px}
+@media(max-width:800px){body{padding:10px}article{padding:12px}.toolbar{position:static}.controls{gap:10px}.controls label{flex-wrap:wrap}input[type=range]{width:160px}.score-table{font-size:12px}.score-table td,.score-table th{padding:5px}}
+</style><header><h1>Photograph alignment review</h1><p>Choose a pair of images and compare them in one pane: blend, drag a wipe divider, or show their RGB difference. Set all views together above the photographs, or adjust each view separately. Red marks missing warp coverage; blue marks exclusions transported from the source mask.</p><p id="summary"></p><p>Alignment scores compare reserved patches with the reference splat. Native detail uses the saved original-resolution photographs; renders and diagnostic maps keep their saved working resolution. Rendered colors are never inserted into corrected photographs.</p><a href="manifest.json">Manifest and settings</a></header><main id="views"></main><footer>White training mask = usable evidence; black = ignored. Use Spirula’s “Ignore distractors” mask mode. Only missing warp coverage and transported source masks exclude pixels. Matching confidence never creates holes.</footer><script>
 const data=)HTML";
     for (char c:manifest) {
         if (c=='<') out << "\\u003c";
@@ -44,41 +76,124 @@ function summaryTable(){
  document.querySelector('header').append(table);
 }
 summaryTable();
-const root=document.querySelector('#views');
+const toolbar=document.createElement('div');toolbar.className='controls toolbar';
+toolbar.innerHTML='<strong>Set all views</strong><label>Compare <select aria-label="All views comparison"><option value="original-corrected">Original ↔ corrected</option><option value="original-render">Original ↔ render</option><option value="corrected-render">Corrected ↔ render</option><option value="corrected-mask">Corrected ↔ training mask</option><option value="corrected-coverage">Corrected ↔ warp coverage</option></select></label><label>Mode <select aria-label="All views mode"><option value="blend">Blend</option><option value="wipe">Wipe</option><option value="difference">Difference</option></select></label><label>Blend / position <input aria-label="All views blend" type="range" min="0" max="100" value="50"><output>50%</output></label>';
+const root=document.querySelector('#views');root.before(toolbar);
+const allPair=toolbar.querySelector('[aria-label="All views comparison"]'),allMode=toolbar.querySelector('[aria-label="All views mode"]'),allBlend=toolbar.querySelector('input');
+const applyAll=document.createElement('button');applyAll.type='button';applyAll.textContent='Apply to all';toolbar.append(applyAll);
+applyAll.addEventListener('click',()=>cards.forEach(c=>{c.setPair(allPair.value);c.setMode(allMode.value);c.setBlend(allBlend.value)}));
+allPair.addEventListener('change',()=>cards.forEach(c=>c.setPair(allPair.value)));
+allMode.addEventListener('change',()=>{allBlend.disabled=allMode.value==='difference';cards.forEach(c=>c.setMode(allMode.value))});
+allBlend.addEventListener('input',()=>{toolbar.querySelector('output').value=allBlend.value+'%';cards.forEach(c=>c.setBlend(allBlend.value))});
+
 for(const [i,v] of data.views.entries()){
- const card=document.createElement('article');root.append(card);const title=document.createElement('h2');title.textContent=`${i+1}. ${v.source}`;card.append(title);
- const choices=versions(v),available=choices.filter(c=>c.preview_available);
+ const card=document.createElement('article');root.append(card);
+ const title=document.createElement('h2');title.textContent=`${i+1}. ${v.source}`;card.append(title);
+ const available=versions(v).filter(c=>c.preview_available);
  if(!available.length){const error=document.createElement('p');error.className='error';error.textContent=v.error||'No completed correction';card.append(error);continue}
  const metrics=document.createElement('div');metrics.className='metrics';card.append(metrics);
- const controls=document.createElement('div');controls.className='controls';controls.innerHTML='<label>Photo ↔ render <input aria-label="Photograph to render blend" type="range" min="0" max="100" value="50"><output>50%</output></label><label>Zoom <select aria-label="Comparison zoom"><option value="100">Fit</option><option value="200">200%</option><option value="400">400%</option><option value="800">800%</option><option value="pixels">Actual pixels</option></select></label><label>Photographs <select aria-label="Photograph resolution"><option value="preview">Working preview</option><option value="native">Native detail</option></select></label><label><input type="checkbox"> Show excluded pixels</label><button type="button">Blink photographs / render</button>';card.append(controls);
- const pair=document.createElement('div');pair.className='pair';card.append(pair);const panes=[];
- function pane(name,file,version){
-  const figure=document.createElement('div');figure.className='comparison-figure';const cap=document.createElement('figcaption');cap.textContent=name+' + reference';figure.append(cap);
-  const scroller=document.createElement('div');scroller.className='pane';const stage=document.createElement('div');stage.className='stage';
-  for(const [cls,src] of [['photo',file],['render',v.preview+'/render.png'],['mask',version?(version.mask_preview||version.preview+'/ignored.png'):null]]){if(!src)continue;const img=document.createElement('img');img.className=cls;img.src=pathUrl(src);img.alt=cls==='photo'?name:cls==='render'?'Reference splat render':'Corrected-image exclusions';img.loading='lazy';stage.append(img)}
-  scroller.append(stage);figure.append(scroller);pair.append(figure);const item={figure,scroller,stage,version};panes.push(item);return item;
+ const controls=document.createElement('div');controls.className='controls';
+ controls.innerHTML='<label>Compare <select aria-label="Image pair"></select></label><label>Mode <select aria-label="Comparison mode"><option value="blend">Blend</option><option value="wipe">Wipe</option><option value="difference">Difference</option></select></label><label><span class="range-label">Blend</span> <input aria-label="Comparison blend" type="range" min="0" max="100" value="50"><output>50%</output></label><label>Zoom <select aria-label="Comparison zoom"><option value="100">Fit</option><option value="200">200%</option><option value="400">400%</option><option value="800">800%</option><option value="pixels">Actual pixels</option></select></label><label>Photographs <select aria-label="Photograph resolution"><option value="preview">Working preview</option><option value="native">Native detail</option></select></label><label><input aria-label="Show corrected exclusions" type="checkbox"> Show corrected exclusions</label>';
+ card.append(controls);
+ const endpoints=document.createElement('div');endpoints.className='controls endpoints';
+ const buttonA=document.createElement('button'),blink=document.createElement('button'),buttonB=document.createElement('button');
+ for(const b of [buttonA,blink,buttonB])b.type='button';blink.textContent='Blink A / B';blink.title='Switch directly between the two images';endpoints.append(buttonA,blink,buttonB);card.append(endpoints);
+ const figure=document.createElement('figure');figure.className='comparison-figure';
+ const caption=document.createElement('figcaption');figure.append(caption);
+ const pane=document.createElement('div');pane.className='pane';
+ const stage=document.createElement('div');stage.className='stage';stage.style.aspectRatio=v.width+'/'+v.height;
+ const layers=['a','b'].map(name=>{const layer=document.createElement('div');layer.className='layer layer-'+name;const img=document.createElement('img');img.loading='lazy';img.draggable=false;layer.append(img);stage.append(layer);return {layer,img}});
+ const exclusions=document.createElement('img');exclusions.className='exclusions';exclusions.alt='Corrected-image exclusions: red is missing warp coverage; blue is the transported source mask';exclusions.loading='lazy';exclusions.draggable=false;stage.append(exclusions);
+ const divider=document.createElement('div');divider.className='divider';divider.hidden=true;divider.innerHTML='<span>↔</span>';stage.append(divider);
+ pane.append(stage);figure.append(pane);card.append(figure);
+ const pairSelect=controls.querySelector('[aria-label="Image pair"]'),mode=controls.querySelector('[aria-label="Comparison mode"]'),range=controls.querySelector('input[type=range]'),zoom=controls.querySelector('[aria-label="Comparison zoom"]'),native=controls.querySelector('[aria-label="Photograph resolution"]'),mask=controls.querySelector('input[type=checkbox]');
+ let pairs=[],pair=null,generation=0;
+ const original={kind:'photo',label:'Original photo',preview:v.preview+'/original.png',native:v.original_native};
+ const render={kind:'render',label:'Splat render',preview:v.preview+'/render.png'};
+ const corrected=c=>({kind:'photo',label:data.comparison?sizeLabel(c.resolution)+' correction':'Corrected photo',preview:c.preview+'/corrected.png',native:c.image,version:c});
+ function center(){
+  const a=stage.getBoundingClientRect(),b=pane.getBoundingClientRect();
+  return {x:a.width?(b.left+pane.clientWidth/2-a.left)/a.width:.5,y:a.height?(b.top+pane.clientHeight/2-a.top)/a.height:.5};
  }
- pane('Original photograph',v.preview+'/original.png',null);
- for(const version of available)pane(`${sizeLabel(version.resolution)} correction`,version.preview+'/corrected.png',version);
- const range=controls.querySelector('input[type=range]'),zoom=controls.querySelector('[aria-label="Comparison zoom"]'),native=controls.querySelector('[aria-label="Photograph resolution"]'),mask=controls.querySelector('input[type=checkbox]');
- const blend=()=>{pair.querySelectorAll('.render').forEach(e=>e.style.opacity=range.value/100);controls.querySelector('output').value=range.value+'%'};range.addEventListener('input',blend);
- function alignScroll(){const original=panes[0].scroller;for(const p of panes)if(p.version&&!p.figure.hidden){p.scroller.scrollLeft=original.scrollLeft;p.scroller.scrollTop=original.scrollTop}}
- const applyZoom=()=>{for(const p of panes){const img=p.stage.querySelector('.photo');p.stage.style.width=zoom.value==='pixels'?Math.max(p.scroller.clientWidth,img.naturalWidth)+'px':zoom.value+'%'}};
- function images(){for(const p of panes){if(p.figure.hidden)continue;const version=p.version;const file=native.value==='native'?(version?.image||v.original_native):null;const target=file||((version?.preview||v.preview)+(version?'/corrected.png':'/original.png'));const img=p.stage.querySelector('.photo');if(img.getAttribute('src')!==pathUrl(target))img.src=pathUrl(target);img.onload=()=>{applyZoom();requestAnimationFrame(alignScroll)};}applyZoom();}
- zoom.addEventListener('change',applyZoom);native.addEventListener('change',images);mask.addEventListener('change',()=>pair.querySelectorAll('.mask').forEach(s=>s.style.opacity=mask.checked?'.65':'0'));
- controls.querySelector('button').addEventListener('click',()=>{range.value=range.value<50?100:0;blend()});
- let syncing=false;for(const p of panes)p.scroller.addEventListener('scroll',()=>{if(syncing||p.figure.hidden)return;syncing=true;for(const other of panes)if(other!==p&&!other.figure.hidden){other.scroller.scrollLeft=p.scroller.scrollLeft;other.scroller.scrollTop=p.scroller.scrollTop}requestAnimationFrame(()=>syncing=false)});
- const links=document.createElement('p');for(const version of available){const q=version.diagnostic_preview||version.preview;for(const [label,url] of [[`${sizeLabel(version.resolution)}: native image`,version.image],[`${sizeLabel(version.resolution)}: mask`,version.mask],[`${sizeLabel(version.resolution)}: warp`,q+'/warp.bin']]){if(!url)continue;const a=document.createElement('a');a.textContent=label;a.href=pathUrl(url);links.append(a,document.createTextNode(' · '))}}card.append(links);
- const details=document.createElement('details');const heading=document.createElement('summary');heading.textContent='Inspect matching and warp diagnostics';details.append(heading);
- for(const version of available){const q=version.diagnostic_preview||version.preview,d=version.matching;if(d){const stats=document.createElement('p');stats.textContent=`${sizeLabel(version.resolution)} · sampled: ${d.sampled} → finite: ${d.finite} → overlap: ${d.overlap} → round trip: ${d.cycle} → displacement: ${d.bounded}. Legacy filters: opacity ${d.old_opacity} → depth ${d.old_depth} → correlation ${d.old_correlation}. Median movement ${d.median_displacement.toFixed(3)} working px; round trip ${d.median_cycle.toFixed(3)} working px. These are matching diagnostics; they do not determine image validity.`;details.append(stats);}
- for(const [label,file] of [['RoMa overlap: white = high','overlap'],['Round trip: green = consistent, red = 5 px or more','cycle'],['Raw render-to-photo movement','raw-flow'],['Final render-to-photo movement','deformation'],['Actual source coverage: white = covered','coverage']]){const caption=document.createElement('p');caption.textContent=`${sizeLabel(version.resolution)} · ${label}`;const img=document.createElement('img');img.loading='lazy';img.style.cssText='max-width:100%;display:block';img.src=pathUrl(q+'/'+file+'.png');img.alt=label;details.append(caption,img);}}card.append(details);
+ function layout(saved=center()){
+  const n=pair?.a.kind==='photo'?0:pair?.b.kind==='photo'?1:0,img=layers[n].img;
+  const aspect=img.naturalWidth&&img.naturalHeight?img.naturalWidth/img.naturalHeight:v.width/v.height;
+  const fit=Math.max(1,Math.min(pane.clientWidth,window.innerHeight*.72*aspect));
+  stage.style.aspectRatio=String(aspect);
+  stage.style.width=(zoom.value==='pixels'?(img.naturalWidth||(native.value==='native'?v.width:fit)):fit*Number(zoom.value)/100)+'px';
+  const a=stage.getBoundingClientRect(),b=pane.getBoundingClientRect();
+  pane.scrollLeft+=a.left+saved.x*a.width-(b.left+pane.clientWidth/2);
+  pane.scrollTop+=a.top+saved.y*a.height-(b.top+pane.clientHeight/2);
+ }
+ function display(){
+  if(!pair)return;
+  const p=Number(range.value);range.disabled=mode.value==='difference';
+  layers[1].layer.style.opacity=mode.value==='blend'?p/100:1;
+  layers[1].layer.style.mixBlendMode=mode.value==='difference'?'difference':'normal';
+  layers[1].layer.style.clipPath=mode.value==='wipe'?`inset(0 ${100-p}% 0 0)`:'none';
+  divider.hidden=mode.value!=='wipe';divider.style.left=p+'%';stage.classList.toggle('wipe',mode.value==='wipe');
+  controls.querySelector('.range-label').textContent=mode.value==='wipe'?'Position':'Blend';
+  controls.querySelector('output').value=mode.value==='difference'?'A − B':p+'%';
+  const c=pair.maskVersion;mask.disabled=!c;exclusions.style.opacity=mask.checked&&c?'.65':'0';
+  buttonA.textContent='A: '+pair.a.label;buttonB.textContent='B: '+pair.b.label;
+  buttonA.classList.toggle('active',mode.value!=='difference'&&p===0);buttonB.classList.toggle('active',mode.value!=='difference'&&p===100);
+  caption.textContent=mode.value==='difference'?`RGB difference · ${pair.a.label} / ${pair.b.label} · black = agreement; brightness and color differences also appear`:mode.value==='wipe'?`${pair.b.label} on the left · ${pair.a.label} on the right · drag the divider`:`${pair.a.label} ↔ ${pair.b.label} · ${p}% B`;
+  if(native.value==='native'&&[pair.a,pair.b].some(x=>x.kind==='render'||x.kind==='coverage'))caption.textContent+=' · render / coverage retain their saved working resolution';
+ }
+ function images(){
+  if(!pair)return;
+  const token=++generation,saved=center();
+  for(const [n,item] of [pair.a,pair.b].entries()){
+   const img=layers[n].img,target=pathUrl(native.value==='native'&&item.native?item.native:item.preview);
+   img.alt=item.label;
+   img.onload=()=>{if(token===generation)layout()};
+   img.onerror=()=>{if(token===generation){caption.textContent='Cannot load '+item.label;caption.classList.add('error')}};
+   if(img.getAttribute('src')!==target)img.src=target;
+  }
+  const c=pair.maskVersion||available[0],target=pathUrl(c.mask_preview||c.preview+'/ignored.png');
+  if(exclusions.getAttribute('src')!==target)exclusions.src=target;
+  caption.classList.remove('error');layout(saved);display();
+ }
+ function endpoint(value){if(mode.value==='difference')mode.value='blend';range.value=value;display()}
+ buttonA.addEventListener('click',()=>endpoint(0));buttonB.addEventListener('click',()=>endpoint(100));blink.addEventListener('click',()=>endpoint(Number(range.value)<50?100:0));
+ pairSelect.addEventListener('change',()=>{pair=pairs.find(p=>p.id===pairSelect.value);images()});
+ mode.addEventListener('change',display);range.addEventListener('input',display);mask.addEventListener('change',display);
+ zoom.addEventListener('change',()=>layout());native.addEventListener('change',images);window.addEventListener('resize',()=>layout());
+ const drag=e=>{const r=stage.getBoundingClientRect();range.value=Math.round(Math.max(0,Math.min(100,(e.clientX-r.left)/r.width*100)));display()};
+ stage.addEventListener('pointerdown',e=>{if(mode.value!=='wipe'||e.button!==0)return;e.preventDefault();stage.setPointerCapture(e.pointerId);drag(e)});
+ stage.addEventListener('pointermove',e=>{if(mode.value==='wipe'&&stage.hasPointerCapture(e.pointerId))drag(e)});
+ stage.addEventListener('pointerup',e=>{if(stage.hasPointerCapture(e.pointerId))stage.releasePointerCapture(e.pointerId)});
+ const links=document.createElement('p');links.className='asset-links';
+ for(const version of available){const q=version.diagnostic_preview||version.preview;for(const [label,url] of [[`${sizeLabel(version.resolution)}: native image`,version.image],[`${sizeLabel(version.resolution)}: mask`,version.mask],[`${sizeLabel(version.resolution)}: warp`,q+'/warp.bin']]){if(!url)continue;const a=document.createElement('a');a.textContent=label;a.href=pathUrl(url);links.append(a,document.createTextNode(' · '))}}card.append(links);
+ const details=document.createElement('details'),heading=document.createElement('summary');heading.textContent='Inspect matching and warp diagnostics';details.append(heading);
+ for(const version of available){
+  const q=version.diagnostic_preview||version.preview,d=version.matching;
+  if(d){const stats=document.createElement('p');stats.textContent=`${sizeLabel(version.resolution)} · sampled: ${d.sampled} → finite: ${d.finite} → overlap: ${d.overlap} → round trip: ${d.cycle} → displacement: ${d.bounded}. Legacy filters: opacity ${d.old_opacity} → depth ${d.old_depth} → correlation ${d.old_correlation}. Median movement ${d.median_displacement.toFixed(3)} working px; round trip ${d.median_cycle.toFixed(3)} working px. These diagnostics do not determine image validity.`;details.append(stats);}
+  for(const [label,file] of [['RoMa overlap: white = high','overlap'],['Round trip: green = consistent, red = 5 px or more','cycle'],['Raw render-to-photo movement','raw-flow'],['Final render-to-photo movement','deformation'],['Actual source coverage: white = covered','coverage']]){const caption=document.createElement('p');caption.textContent=`${sizeLabel(version.resolution)} · ${label}`;const img=document.createElement('img');img.loading='lazy';img.style.cssText='max-width:100%;display:block';img.src=pathUrl(q+'/'+file+'.png');img.alt=label;details.append(caption,img);}
+ }card.append(details);
  function refresh(){
-  let visible=1;for(const p of panes)if(p.version){p.figure.hidden=!chosen.has(p.version.resolution);visible+=!p.figure.hidden}pair.style.setProperty('--panes',visible);
-  metrics.replaceChildren();for(const c of available){if(!chosen.has(c.resolution))continue;const row=document.createElement('div');let scores=c.common_audits?c.common_audits.map(a=>`${a.resolution} common NCC ${number(a.before)} → ${number(a.after)} (${a.count} identical patches; ${a.invalid} unavailable)`).join(' · '):`reserved NCC ${number(c.audit_before)} → ${number(c.audit_after)} (${c.audit_count} scored; ${c.audit_invalid} unavailable)`;row.textContent=`${sizeLabel(c.resolution)} · usable ${(100*c.valid_fraction).toFixed(3)}% · source masks ${(100*c.source_mask_loss_fraction).toFixed(3)}% · confidence exclusions 0 · ${scores} · native ${c.width} × ${c.height}`;if(c.status==='fallback'){row.className='error';row.textContent+=' · unchanged original: '+c.fallback_reason}metrics.append(row)}images();requestAnimationFrame(alignScroll);
+  const selected=available.filter(c=>chosen.has(c.resolution)),previous=pairSelect.value;pairs=[];
+  const add=(family,id,label,a,b,maskVersion,group='Photographs and render')=>pairs.push({family,id,label,a,b,maskVersion,group});
+  const suffix=c=>data.comparison?' · '+sizeLabel(c.resolution):'';
+  for(const c of selected)add('original-corrected','original-corrected-'+c.resolution,'Original ↔ corrected'+suffix(c),original,corrected(c),c);
+  add('original-render','original-render','Original ↔ render',original,render,null);
+  for(const c of selected){
+   add('corrected-render','corrected-render-'+c.resolution,'Corrected ↔ render'+suffix(c),corrected(c),render,c);
+   add('corrected-mask','corrected-mask-'+c.resolution,'Corrected ↔ training mask'+suffix(c),corrected(c),{kind:'mask',label:'Training mask',preview:c.mask},c,'Validity');
+   add('corrected-coverage','corrected-coverage-'+c.resolution,'Corrected ↔ warp coverage'+suffix(c),corrected(c),{kind:'coverage',label:'Warp coverage',preview:(c.diagnostic_preview||c.preview)+'/coverage.png'},c,'Validity');
+  }
+  for(let a=0;a<selected.length;a++)for(let b=a+1;b<selected.length;b++)add('corrections','corrections-'+selected[a].resolution+'-'+selected[b].resolution,`${sizeLabel(selected[a].resolution)} correction ↔ ${sizeLabel(selected[b].resolution)} correction`,corrected(selected[a]),corrected(selected[b]),selected[b],'Correction resolutions');
+  pairSelect.replaceChildren();const groups=new Map();
+  for(const p of pairs){if(!groups.has(p.group)){const group=document.createElement('optgroup');group.label=p.group;groups.set(p.group,group);pairSelect.append(group)}const option=document.createElement('option');option.value=p.id;option.textContent=p.label;groups.get(p.group).append(option)}
+  pair=pairs.find(p=>p.id===previous)||pairs.find(p=>p.family===allPair.value)||pairs[0];pairSelect.value=pair.id;
+  metrics.replaceChildren();
+  for(const c of selected){const row=document.createElement('div');const scores=c.common_audits?c.common_audits.map(a=>`${a.resolution} common NCC ${number(a.before)} → ${number(a.after)} (${a.count} identical patches; ${a.invalid} unavailable)`).join(' · '):`reserved NCC ${number(c.audit_before)} → ${number(c.audit_after)} (${c.audit_count} scored; ${c.audit_invalid} unavailable)`;row.textContent=`${sizeLabel(c.resolution)} · usable ${(100*c.valid_fraction).toFixed(3)}% · source masks ${(100*c.source_mask_loss_fraction).toFixed(3)}% · ${scores} · native ${c.width} × ${c.height}`;if(c.status==='fallback'){row.className='error';row.textContent+=' · unchanged original: '+c.fallback_reason}metrics.append(row)}
+  images();
  }
- cards.push(refresh);refresh();
+ const controller={refresh,setPair:family=>{pair=pairs.find(p=>p.family===family)||pairs[0];pairSelect.value=pair.id;images()},setMode:value=>{mode.value=value;display()},setBlend:value=>{range.value=value;display()}};
+ cards.push(controller);refresh();
 }
-function updateVersions(){cards.forEach(refresh=>refresh())}
+function updateVersions(){cards.forEach(c=>c.refresh())}
 </script></html>)HTML";
     if (!out) throw std::runtime_error("cannot write alignment report");
 }

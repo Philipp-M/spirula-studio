@@ -137,9 +137,12 @@ thin occluders remain difficult.
 
 Review files below require `--keep-alignment-data`.
 
-- `index.html`: all selected views on one offline page, with original/render and
-  corrected/render blending, synchronized scrolling, zoom, native photograph
-  detail, blink, exclusion overlays and expandable matching diagnostics.
+- `index.html`: one image pane per selected view, with a dropdown for original,
+  corrected, render, training-mask and warp-coverage pairs. Blend, draggable wipe
+  and RGB difference modes share zoom and native-detail controls. Top controls
+  update every view; individual controls override them. Resolution comparisons
+  also offer direct corrected/corrected pairs. Exclusion overlays and expandable
+  matching diagnostics use existing images; changing the viewer rerenders no splats.
 - `images/`: native corrected images, preserving subdirectories and replacing
   the source extension with `.png` or `.jpg`. Filename collisions are rejected.
 - `masks/`: matching white-usable/black-ignore grayscale PNG sidecars following
@@ -211,9 +214,10 @@ spirula align-images --compare HALF_RUN --compare BASE_RUN --compare DOUBLE_RUN 
 
 The command requires identical source/model provenance, camera parameters,
 selection, precision and fitting settings apart from maximum resolution. It
-writes a fresh review directory. The page has global resolution checkboxes and
-a cycle button, with shared blending, mask overlays, synchronized scrolling and
-native-detail inspection within each view. Native images, masks and diagnostics
+writes a fresh review directory. Global resolution checkboxes and a cycle button
+select the corrections offered in each view's pair dropdown, including direct
+comparisons between correction resolutions. Blend, wipe, RGB difference, mask
+overlays and native-detail inspection share one pane per view. Native images, masks and diagnostics
 link to the existing runs, so keep those directories beside the review. Open
 `index.html` directly, or serve their common parent directory when using HTTP.
 
