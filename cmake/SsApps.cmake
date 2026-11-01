@@ -61,6 +61,14 @@ target_compile_options(ss_dense PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FL
 set_property(TARGET ss_dense PROPERTY CXX_STANDARD 17)
 set(SS_APP_LIBS ss_dense ${SS_APP_LIBS})
 
+file(GLOB SS_ALIGN_SOURCES CONFIGURE_DEPENDS ${SS_SRC}/align/*.cpp)
+add_library(ss_align STATIC ${SS_ALIGN_SOURCES})
+target_include_directories(ss_align PUBLIC ${SS_SRC})
+target_compile_options(ss_align PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FLAGS}>)
+target_link_libraries(ss_align PUBLIC ${SS_APP_LIBS})
+set_property(TARGET ss_align PROPERTY CXX_STANDARD 17)
+set(SS_APP_LIBS ss_align ${SS_APP_LIBS})
+
 # ---------------------------------------------------------------------------
 # Which tools this build has
 #
@@ -110,6 +118,8 @@ list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/partition_main.cpp)
 list(APPEND SS_TOOL_DEFS SS_TOOL_PARTITION=1)
 list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/dense_main.cpp)
 list(APPEND SS_TOOL_DEFS SS_TOOL_DENSE=1)
+list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/align_main.cpp ${SS_SRC}/app/cli/align_compare.cpp)
+list(APPEND SS_TOOL_DEFS SS_TOOL_ALIGN=1)
 
 # ---- mesh extraction ----
 # Both backends: the host side is portable (mesh/OccupancyEvaluator.cpp) and
@@ -392,6 +402,7 @@ endif()
 file(GLOB SS_CORE_TESTS CONFIGURE_DEPENDS
      ${SS_SRC}/core/tests/*.cpp ${SS_SRC}/data/tests/*.cpp
      ${SS_SRC}/dense/tests/*.cpp
+     ${SS_SRC}/align/tests/*.cpp
      ${SS_SRC}/mesh/tests/*.cpp)
 foreach(test_src ${SS_CORE_TESTS})
     get_filename_component(test_name ${test_src} NAME_WE)

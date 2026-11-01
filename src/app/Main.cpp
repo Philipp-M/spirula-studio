@@ -13,6 +13,7 @@
 #include "i18n/Locale.h"
 #include "i18n/catalog/Cli.h"
 #include "i18n/catalog/Dense.h"
+#include "i18n/catalog/Align.h"
 #ifdef SS_HAVE_LPIPS
 #include "app/EvalLpips.h"
 #endif
@@ -87,6 +88,9 @@ const std::vector<Tool>& tools() {
 #endif
 #ifdef SS_TOOL_DENSE
         {app::kToolDense, &spirula::i18n::msg::dense::title, spirula_dense_main},
+#endif
+#ifdef SS_TOOL_ALIGN
+        {app::kToolAlign, &spirula::i18n::msg::align::title, spirula_align_main},
 #endif
 #ifdef SS_TOOL_MESH
         {app::kToolMesh, &cmsg::tool_mesh, spirula_mesh_main},

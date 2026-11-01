@@ -1,3 +1,4 @@
+#include "roma/PredictionFile.h"
 #include "app/DenseProcessing.h"
 #include "dense/Artifact.h"
 
@@ -718,28 +719,6 @@ void report_device(MemoryReporter& memory, const roma::Session& session) {
     memory.device(ours, others, capacity, ours + (cache.limit_bytes > cache.bytes ? cache.limit_bytes - cache.bytes : 0));
 }
 
-void write_prediction(std::ostream& out, const roma::Prediction& p) {
-    const int32_t dims[2] = {p.width, p.height};
-    out.write(reinterpret_cast<const char*>(dims), sizeof dims);
-    for (const auto* data : {&p.warp, &p.overlap, &p.precision})
-        out.write(reinterpret_cast<const char*>(data->data()), (std::streamsize)(data->size() * sizeof(float)));
-}
-
-bool read_prediction(std::istream& in, roma::Prediction& p, int w, int h, bool present) {
-    int32_t dims[2];
-    in.read(reinterpret_cast<char*>(dims), sizeof dims);
-    if (!in || dims[0] != (present ? w : 0) || dims[1] != (present ? h : 0)) return false;
-    p.width = dims[0]; p.height = dims[1];
-    const size_t n = present ? (size_t)w * h : 0;
-    p.warp.resize(n * 2); p.overlap.resize(n); p.precision.resize(n * 3);
-    for (auto* data : {&p.warp, &p.overlap, &p.precision}) {
-        in.read(reinterpret_cast<char*>(data->data()), (std::streamsize)(data->size() * sizeof(float)));
-        if (!in) return false;
-        for (float value : *data) if (!std::isfinite(value)) return false;
-    }
-    return true;
-}
-
 fs::path sibling(fs::path path, const char* suffix) { path += suffix; return path; }
 
 bool cached_prediction(const fs::path& path, const DenseConfig& config, roma::PairPrediction& p) {
@@ -752,13 +731,13 @@ bool cached_prediction(const fs::path& path, const DenseConfig& config, roma::Pa
     if (!in || std::string(magic, sizeof magic) != "SSROMA03") return false;
     const int w = config.match.high_width ? config.match.high_width : config.match.low_width;
     const int h = config.match.high_height ? config.match.high_height : config.match.low_height;
-    return read_prediction(in, p.forward, w, h, true) && read_prediction(in, p.backward, w, h, config.match.bidirectional) && in.peek() == EOF;
+    return roma::read_prediction(in, p.forward, w, h, true) && roma::read_prediction(in, p.backward, w, h, config.match.bidirectional) && in.peek() == EOF;
 }
 
 void cache_prediction(const fs::path& path, const roma::PairPrediction& p) {
     const fs::path part = sibling(path, ".part");
     std::ofstream out(part, std::ios::binary | std::ios::trunc);
-    out.write("SSROMA03", 8); write_prediction(out, p.forward); write_prediction(out, p.backward);
+    out.write("SSROMA03", 8); roma::write_prediction(out, p.forward); roma::write_prediction(out, p.backward);
     out.flush();
     if (!out) throw std::runtime_error("cannot cache RoMa pair prediction: " + part.string());
     out.close();
