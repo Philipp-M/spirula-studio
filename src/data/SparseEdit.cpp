@@ -921,6 +921,22 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
     return written;
 }
 
+SparseImageObservations read_sparse_observations(const std::string& dataset_dir,const std::vector<int32_t>& image_ids) {
+    bool text=false;const auto model=find_colmap_model(dataset_dir,"",&text);
+    if(model.empty())throw std::runtime_error("sparse observations require COLMAP");
+    const auto images=text?read_images_text(model):read_images_binary(model);
+    const auto source=read_file(fs::path(model)/(text?"images.txt":"images.bin"));
+    std::map<int32_t,ColmapImage> selected;SparseImageObservations observations;
+    for(int32_t id:image_ids) {
+        selected.emplace(id,images.at(id));observations.emplace(id,std::vector<std::array<double,2>>{});
+    }
+    const auto collect=[&](int32_t id,double& x,double& y){observations.at(id).push_back({x,y});};
+    std::set<int32_t> dropped;
+    if(text)filter_images_txt(source,{},dropped,nullptr,&selected,collect);
+    else filter_images_bin(source,{},dropped,nullptr,&selected,collect);
+    return observations;
+}
+
 void sparse_write_camera_copy(const std::string& dataset_dir,const std::string& out_dir,
                               const std::map<int32_t,ColmapImage>& poses,const SparseObservationTransform& transform) {
     SparseBaseline base=load_baseline(dataset_dir);
@@ -938,9 +954,8 @@ void sparse_write_camera_copy(const std::string& dataset_dir,const std::string& 
         if(std::abs(norm-1)>1e-6)throw std::runtime_error("camera rotation must be a unit quaternion");
     }
     std::set<int32_t> dropped;
-    const auto images=base.text?filter_images_txt(base.images,{},dropped,nullptr,&poses,transform):filter_images_bin(base.images,{},dropped,nullptr,&poses,transform);
+    base.images=base.text?filter_images_txt(base.images,{},dropped,nullptr,&poses,transform):filter_images_bin(base.images,{},dropped,nullptr,&poses,transform);
     sparse_write_copy(dataset_dir,out_dir,{},nullptr,&base);
-    write_file(fs::path(out_dir)/"sparse/0"/(base.text?"images.txt":"images.bin"),images);
 }
 
 }  // namespace spirula

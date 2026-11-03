@@ -70,6 +70,9 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
 
 // Observation indices and 3D tracks stay fixed when pixel coordinates change.
 using SparseObservationTransform = std::function<void(int32_t,double&,double&)>;
+using SparseImageObservations = std::map<int32_t,std::vector<std::array<double,2>>>;
+SparseImageObservations read_sparse_observations(const std::string& dataset_dir,
+                                                const std::vector<int32_t>& image_ids);
 void sparse_write_camera_copy(const std::string& dataset_dir, const std::string& out_dir,
                               const std::map<int32_t,ColmapImage>& poses,
                               const SparseObservationTransform& transform = {});

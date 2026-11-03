@@ -13,10 +13,26 @@
 
 int main(int argc,char** argv) {
     try {
-        if(argc!=3)throw std::runtime_error("usage: image_alignment_dataset_test OUTPUT EXPECTED_COUNT");
+        if(argc!=3&&argc!=4)throw std::runtime_error("usage: image_alignment_dataset_test OUTPUT EXPECTED_COUNT [RETAINED_REFERENCE]");
         namespace fs=std::filesystem;
         const auto root=fs::canonical(argv[1]);const size_t expected=std::stoull(argv[2]);
-        const auto manifest=json_parse_file((root/"manifest.json").string());
+        const auto reference=argc==4?fs::canonical(argv[3]):root;
+        const auto manifest=json_parse_file((reference/"manifest.json").string());
+        auto same_file=[](const fs::path& a,const fs::path& b) {
+            if(fs::file_size(a)!=fs::file_size(b))return false;
+            std::ifstream left(a,std::ios::binary),right(b,std::ios::binary);
+            return std::equal(std::istreambuf_iterator<char>(left),std::istreambuf_iterator<char>(),std::istreambuf_iterator<char>(right),std::istreambuf_iterator<char>());
+        };
+        if(argc==4) {
+            for(const auto& entry:fs::directory_iterator(root)) {
+                const auto name=entry.path().filename().string();
+                if(!entry.is_directory()||(name!="images"&&name!="masks"&&name!="sparse"))
+                    throw std::runtime_error("compact export retained intermediate files");
+            }
+            if(fs::exists(reference/"sparse"))for(const auto& entry:fs::recursive_directory_iterator(reference/"sparse"))
+                if(entry.is_regular_file()&&!same_file(entry.path(),root/entry.path().lexically_relative(reference)))
+                    throw std::runtime_error("compact export changed the camera model or transported observations");
+        }
         const bool cameras=manifest.find("refine_cameras")&&manifest.find("refine_cameras")->as_bool();
         const bool residual=manifest.find("residual_warp")&&manifest.find("residual_warp")->as_bool();
         const bool source_format=manifest.find("image_format")&&manifest.find("image_format")->as_string()=="source";
@@ -34,6 +50,8 @@ int main(int argc,char** argv) {
             if(status!="ok"&&status!="fallback")throw std::runtime_error("sample includes a failed export");
             const auto image=fs::canonical(root/v.find("image")->as_string());
             const auto mask=fs::canonical(root/v.find("mask")->as_string());
+            if(argc==4&&(!same_file(image,reference/v.find("image")->as_string())||!same_file(mask,reference/v.find("mask")->as_string())))
+                throw std::runtime_error("compact export differs from retained-data images or masks");
             unsigned char image_magic[2]{},mask_magic[2]{};
             std::ifstream(image,std::ios::binary).read((char*)image_magic,2);
             std::ifstream(mask,std::ios::binary).read((char*)mask_magic,2);
@@ -71,6 +89,7 @@ int main(int argc,char** argv) {
         }
         std::cout<<"PASS: complete sample, native image/mask dimensions, binary coverage and safe output paths";
         std::cout<<(source_format?", byte-identical source photographs\n":cameras?", camera model exported\n":", no copied cameras or point cloud\n");
+        if(argc==4)std::cout<<"PASS: only final dataset files retained; byte-identical images, masks and sparse model\n";
         return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

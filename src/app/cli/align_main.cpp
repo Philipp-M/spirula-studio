@@ -114,7 +114,7 @@ Options parse(int argc,char** argv) {
     }
     if(o.image_format=="jpg")o.image_format="jpeg";
     if(o.residual_warp&&!o.refine_cameras)throw std::runtime_error("--residual-warp requires --refine-cameras");
-    if(o.refine_cameras){o.keep_alignment_data=true;o.pipeline=false;if(o.resume||o.render_only)throw std::runtime_error("camera refinement requires a fresh complete run");}
+    if(o.refine_cameras){o.pipeline=false;if(o.resume||o.render_only)throw std::runtime_error("camera refinement requires a fresh complete run");}
     if(o.image_format!="png"&&o.image_format!="jpeg")throw std::runtime_error("image format must be png, jpeg or jpg");
     if(!o.comparisons.empty()) {
         if(o.comparisons.size()<2||o.output.empty()||!o.data.empty()||!o.reference.empty()||o.all||o.resume||o.render_only||sampled||conversion_option)
@@ -317,8 +317,7 @@ int run(const Options& o) {
     ParsedDataset ds=parse_dataset(o.data.string(),cfg,"");
     if(!ds.num_cameras)throw std::runtime_error("dataset has no registered views");
     std::map<fs::path,ColmapImage> source_poses;std::map<int32_t,ColmapImage> corrected_poses;
-    struct ExportWarp {fs::path path;int width,height;};
-    std::map<int32_t,ExportWarp> export_warps;
+    spirula::SparseImageObservations observations;
     if(o.refine_cameras) {
         bool text=false;const auto model=find_colmap_model(o.data.string(),"",&text);
         if(model.empty())throw std::runtime_error("camera refinement requires a COLMAP dataset");
@@ -331,6 +330,11 @@ int run(const Options& o) {
     }
     std::vector<size_t> selected((size_t)ds.num_cameras);std::iota(selected.begin(),selected.end(),0);
     if(!o.all){std::mt19937 rng(o.seed);for(size_t i=selected.size();i>1;--i)std::swap(selected[i-1],selected[std::uniform_int_distribution<size_t>(0,i-1)(rng)]);selected.resize(std::min(o.sample,selected.size()));std::sort(selected.begin(),selected.end());}
+    if(o.residual_warp) {
+        std::vector<int32_t> ids;
+        for(size_t i:selected)ids.push_back(source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal()).image_id);
+        observations=spirula::read_sparse_observations(o.data.string(),ids);
+    }
     std::ostringstream identity;identity<<"image-align-v2\n"<<stamp(o.reference)<<'\n'<<o.data.string()<<'\n'<<o.seed<<' '<<o.resolution<<' '<<o.primitive
         <<' '<<o.warp.min_overlap<<' '<<o.warp.max_cycle<<' '<<o.warp.max_displacement<<' '<<o.warp.min_correlation<<'\n';
     const auto checkpoint=o.checkpoint.empty()?fs::path(nn::cached_path(spirula::roma::kOfficialCheckpoint)):fs::canonical(o.checkpoint);
@@ -495,13 +499,20 @@ int run(const Options& o) {
                     delta.t={alignment.correction.t[0],alignment.correction.t[1],alignment.correction.t[2]};
                     const auto updated=sfm::composePose(delta,old_pose);
                     pose.qvec=sfm::rotationToQuaternion(updated.R);pose.tvec={updated.t.x,updated.t.y,updated.t.z};corrected_pose=pose;
-                    save_image(cache.render,path/"initial-render.png");
-                    initial_matches=std::move(matches);matcher.unload();
+                    if(o.keep_alignment_data) {
+                        save_image(cache.render,path/"initial-render.png");
+                        initial_matches=std::move(matches);
+                    }else matches={};
+                    matcher.unload();
                     cache=render_view(k,&alignment.correction);release_scene();clamp_render(cache);
-                    save_image(cache.render,path/"render.png");write_cache(cache,path/"refined-render.bin");
-                    fs::create_directories(path/"refined");bool cached=false;
-                    matches=prediction(matcher,cache,photo,matching_options(w,h),path/"refined",checkpoint,cached);
-                    if(!cached)save_prediction(matches,path/"refined");
+                    const auto refined_path=o.keep_alignment_data?path/"refined":fs::path{};
+                    if(o.keep_alignment_data) {
+                        save_image(cache.render,path/"render.png");write_cache(cache,path/"refined-render.bin");
+                        fs::create_directories(refined_path);
+                    }
+                    bool cached=false;
+                    matches=prediction(matcher,cache,photo,matching_options(w,h),refined_path,checkpoint,cached);
+                    if(o.keep_alignment_data&&!cached)save_prediction(matches,refined_path);
                     matcher.unload();
                 }
                 camera_audit_after=A::audit(photo,photo,cache.render,field).before;
@@ -560,7 +571,17 @@ int run(const Options& o) {
             if(o.residual_warp) {
                 if(!corrected_pose)corrected_pose=source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal());
                 corrected_pose->name=relative[k].generic_string();
-                export_warps[corrected_pose->image_id]={path/"warp.bin",corrected.width,corrected.height};
+                auto mapped=observations.at(corrected_pose->image_id);
+                for(auto& t:field.triangles)std::swap(t.source,t.target);
+                A::index_field(field);
+                for(auto& point:mapped) {
+                    float tx,ty;
+                    // COLMAP uses corner-based coordinates; fields use integer pixel centers.
+                    if(!field.source((float)(point[0]*w/corrected.width-.5),(float)(point[1]*h/corrected.height-.5),tx,ty,true))
+                        throw std::runtime_error("COLMAP observation lies outside the source warp");
+                    point={(tx+.5)*corrected.width/w,(ty+.5)*corrected.height/h};
+                }
+                observations.at(corrected_pose->image_id)=std::move(mapped);
             }
             if(corrected_pose)corrected_poses[corrected_pose->image_id]=*corrected_pose;
             ++succeeded;
@@ -610,19 +631,10 @@ int run(const Options& o) {
     if(completed.valid())completed.get();
     matcher.unload();
     if(o.refine_cameras) {
-        A::Field inverse;int32_t cached_id=-1;
+        int32_t cached_id=-1;size_t observation=0;
         auto transport=[&](int32_t id,double& x,double& y) {
-            const auto& warp=export_warps.at(id);
-            if(cached_id!=id) {
-                inverse=A::load_field(warp.path);
-                for(auto& t:inverse.triangles)std::swap(t.source,t.target);
-                A::index_field(inverse);cached_id=id;
-            }
-            float tx,ty;
-            // COLMAP uses corner-based coordinates; fields use integer pixel centers.
-            if(!inverse.source((float)(x*inverse.width/warp.width-.5),(float)(y*inverse.height/warp.height-.5),tx,ty,true))
-                throw std::runtime_error("COLMAP observation lies outside the source warp");
-            x=(tx+.5)*warp.width/inverse.width;y=(ty+.5)*warp.height/inverse.height;
+            if(cached_id!=id){cached_id=id;observation=0;}
+            const auto& point=observations.at(id).at(observation++);x=point[0];y=point[1];
         };
         spirula::sparse_write_camera_copy(o.data.string(),dest.string(),corrected_poses,
             o.residual_warp?spirula::SparseObservationTransform(transport):spirula::SparseObservationTransform{});

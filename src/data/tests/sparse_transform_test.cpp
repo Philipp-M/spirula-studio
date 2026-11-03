@@ -274,6 +274,9 @@ int main() {
         const std::string extension=text?".txt":".bin",original_images=bytes(model/("images"+extension));
         const auto original_poses=text?read_images_text(model.string()):read_images_binary(model.string());
         auto corrected=original_poses.begin()->second;corrected.tvec[0]+=.125;
+        const auto observations=spirula::read_sparse_observations(dir.string(),{corrected.image_id});
+        check(observations.size()==1&&observations.at(corrected.image_id)==std::vector<std::array<double,2>>{{10.5,20.5}},
+              tag+": selected observations read without dense warp caches");
         const auto camera_copy=root/(text?"camera_copy_txt":"camera_copy_bin");
         spirula::sparse_write_camera_copy(dir.string(),camera_copy.string(),{{corrected.image_id,corrected}});
         const auto output=camera_copy/"sparse/0";
@@ -299,6 +302,8 @@ int main() {
         const auto warped_model=warped_copy/"sparse/0";
         const auto warped_poses=text?read_images_text(warped_model.string()):read_images_binary(warped_model.string());
         check(transported==1&&warped_poses.at(corrected.image_id).name==corrected.name,tag+": output name and observation count");
+        check(spirula::read_sparse_observations(warped_copy.string(),{corrected.image_id}).at(corrected.image_id)==
+              std::vector<std::array<double,2>>{{13.5,18.5}},tag+": transported observations can be read for incremental processing");
         size_t checked_observations=0;
         spirula::sparse_write_camera_copy(warped_copy.string(),(root/(text?"verified_txt":"verified_bin")).string(),warped_poses,
             [&](int32_t id,double& x,double& y){check(x==(id==corrected.image_id?13.5:10.5)&&y==(id==corrected.image_id?18.5:20.5),tag+": stored transported pixel coordinates");++checked_observations;});

@@ -99,11 +99,23 @@ unselected camera records remain in the copied model, so a sampled run is a
 review subset rather than a complete replacement image tree.
 
 Camera refinement currently requires COLMAP without rig frames and a fresh,
-complete run (no `--resume` or `--render-only`). It retains review data and runs
-serially so rendering and matching do not compete for the GPU. Source filenames
+complete run (no `--resume` or `--render-only`). It runs serially so rendering
+and matching do not compete for the GPU. Source filenames
 and encodings are preserved; image-encoding options do not recompress them.
 For small remaining image errors, a separate image-warp run can use this refined
 dataset and keep its camera poses fixed.
+
+Camera refinement processes one image through both stages before moving to the
+next. By default, dense renders, depths, RoMa predictions and warp fields stay
+in RAM and are released after that image; no dense temporary files are written,
+including under `/tmp`. Sparse observation coordinates are transported while the
+field is still in memory. Only compact camera/observation metadata accumulates
+until the COLMAP model is written. The output contains only `images/`, `masks/`
+and `sparse/`.
+
+`--keep-alignment-data` explicitly enables the review and persistent caches. It
+can retain hundreds of megabytes per view at a 2560-pixel working resolution;
+use it for small review samples rather than routine full-dataset processing.
 
 To apply both stages in one run:
 
@@ -117,8 +129,8 @@ rejected pose retains the original camera and still permits residual correction.
 The residual stage has its own reserved-patch acceptance check; rejecting it
 does not undo an accepted pose. Only the final residual field resamples the
 original photograph, once, at native resolution. Output encoding follows
-`--image-format` and `--jpeg-quality`; original native photos are retained in the
-review. Before/after error maps in this mode evaluate the residual stage against
+`--image-format` and `--jpeg-quality`; with `--keep-alignment-data`, original
+native photos are retained in the review. Before/after error maps evaluate the residual stage against
 the accepted pose, and the initial render remains available separately.
 
 The exported COLMAP model uses the output filenames and transports selected
@@ -278,7 +290,10 @@ mean edge error and at least 80% reduction of the original edge displacement.
 foreground parallax, independent background motion and held-out pose residuals.
 `image_alignment_dataset_test`
 checks exported native dimensions against original photographs, masks, coverage
-accounting, safe paths and the absence of copied camera metadata or point clouds.
+accounting and safe paths. Image-only exports exclude camera metadata; camera
+refinement exports require the COLMAP model. Passing a retained-data run as its
+third argument also checks that a compact run contains only final dataset files
+and produces byte-identical photographs, masks and sparse metadata.
 
 The core is portable C++ with no new device kernels. Inference requires
 `SS_BUILD_SAM=ON`, independently of the trainer backend.
