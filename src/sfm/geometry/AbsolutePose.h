@@ -134,7 +134,7 @@ inline void residualPair(const Pose& p, const Vec3& X, const Vec3& bi, double s,
     r[1] = ph.dot(e2);
 }
 
-// LM over (angle-axis delta, translation[, log focal scale]) with a
+// LM over angle-axis (3), pose (6), or pose and log focal scale (7), with a
 // central-difference Jacobian: `resid(pose, s, j, r)` fills the two residual
 // components of correspondence j of n, 1e3 marking a cheirality failure.
 template <class Resid>
@@ -149,7 +149,7 @@ bool lmRefine(int n, const Resid& resid, int NP, Pose& pose, double& s0, int max
     auto stepP = [&](const Pose& p0, const double* d) {
         Pose p;
         p.R = mul(angleAxisToRotation({d[0], d[1], d[2]}), p0.R);
-        p.t = {p0.t.x + d[3], p0.t.y + d[4], p0.t.z + d[5]};
+        p.t = NP>=6?Vec3{p0.t.x+d[3],p0.t.y+d[4],p0.t.z+d[5]}:p0.t;
         return p;
     };
     auto stepS = [&](double s, const double* d) { return NP == 7 ? s * std::exp(d[6]) : s; };

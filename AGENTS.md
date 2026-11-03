@@ -60,6 +60,10 @@ the output directory. Diagnostic and test data are not deliverables by default.
   correction. Auxiliary sparse observations outside image bounds must not drop
   photographs from the output dataset.
 
+For ongoing `align-images` work, read `.codex/align-images-handoff.txt` when
+present. It is local session state, excluded from version control, and separates
+verified findings from unfinished experiments.
+
 ## Repo map
 
 ```

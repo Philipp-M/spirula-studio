@@ -33,11 +33,21 @@ struct Triangle {
     std::array<float, 3> depth;
 };
 
+enum class CameraFitStatus { InsufficientSupport, InsufficientHoldout, NoImprovement, Accepted, ImageValidated, MatchValidated, ImageRejected };
+const char* camera_fit_status(CameraFitStatus status);
+
 struct CameraAlignment {
     Sim3 correction;
+    Sim3 photometric_correction;
+    Sim3 rotation_correction;
     bool accepted = false;
+    bool candidate = false, photometric_candidate = false;
+    bool rotation_candidate = false;
     size_t samples = 0, holdout = 0;
     double error_before = 0, error_after = 0;
+    double photometric_error_after = 0;
+    double rotation_error_after = 0;
+    CameraFitStatus status = CameraFitStatus::InsufficientSupport;
 };
 
 struct Field {
@@ -62,6 +72,24 @@ struct Audit {
     double gradient_before = 0, gradient_after = 0;
 };
 
+struct CameraAudit {
+    bool accepted = false;
+    size_t fine_count = 0, coarse_count = 0;
+    double gain = 0, fine_before = 0, fine_after = 0, coarse_before = 0, coarse_after = 0;
+};
+CameraAudit audit_camera(const Image& photo, const Image& before, const Image& after,
+                         const std::vector<uint8_t>& mask = {});
+
+struct MatchAudit {
+    bool accepted = false;
+    size_t before_count = 0, after_count = 0, common_count = 0;
+    double before = 0, after = 0;
+    double supported_before = 0, supported_after = 0;
+};
+MatchAudit audit_camera_matches(const roma::PairPrediction& before, const roma::PairPrediction& after,
+                                int width, int height, const Settings& settings,
+                                const std::vector<uint8_t>& mask = {});
+
 struct Coverage {
     size_t pixels = 0, covered = 0, masked = 0;
     std::vector<uint8_t> reason;
@@ -72,7 +100,8 @@ Field fit(const Image& photo, const Image& render, const std::vector<float>& dep
           const Settings& settings, const std::vector<uint8_t>& source_mask = {});
 CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector<float>& opacity,
                               const roma::PairPrediction& matches, const Settings& settings,
-                              const camhost::Camera& camera, const std::vector<uint8_t>& source_mask = {});
+                              const camhost::Camera& camera, const std::vector<uint8_t>& source_mask = {},
+                              const Image* photo = nullptr, const Image* render = nullptr);
 Audit audit(const Image& photo, const Image& corrected, const Image& render, const Field& field);
 std::vector<Audit> audit_common(const Image& photo, const std::vector<Image>& corrected,
                                 const Image& render, const std::vector<std::vector<uint8_t>>& masks);

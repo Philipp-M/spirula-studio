@@ -5,14 +5,20 @@ dataset readers, splat renderer, native RoMa v2 and image I/O. It does not train
 Gaussians or modify the editor. The source dataset is read-only; output must be
 a fresh directory outside it, including through symlink aliases.
 
+The default refines camera poses and then corrects residual image distortion.
+No alignment-mode flags are needed. `--camera-only` changes poses without
+warping photographs; `--warp-only` keeps the input poses fixed and supports
+datasets other than COLMAP. `--refine-cameras` and `--residual-warp` remain
+accepted for existing commands, but are redundant in the default mode.
+
 ```sh
 spirula align-images --data DATASET --reference MODEL.ply --output REVIEW \
-  --checkpoint CHECKPOINT.pt --sample 10 --seed 20261031 --keep-alignment-data
+  --checkpoint CHECKPOINT.pt --sample 10 --seed 20261031 --review
 ```
 
 The default is a uniform sample of ten registered images without replacement.
 The selected source views are never replaced with easier photographs. With
-`--keep-alignment-data`, `selection.json` records them before rendering and the
+`--review`, `selection.json` records them before rendering and the
 review includes failures and copies of sampled originals for native inspection.
 
 Full conversion uses the same path and requires explicit selection:
@@ -22,8 +28,8 @@ spirula align-images --data DATASET --reference MODEL.ply --output CORRECTED \
   --checkpoint CHECKPOINT.pt --all
 ```
 
-`--all` does not copy originals into the report. No full-dataset conversion is
-needed for evaluation. Without `--max-resolution`, rendering and fine matching
+No full-dataset conversion is needed for evaluation. Without diagnostic retention,
+no extra copies of original photographs are written. Without `--max-resolution`, rendering and fine matching
 use each photograph’s native dimensions with no resolution cap. Providing
 `--max-resolution PIXELS` explicitly caps the longest rendering/matching side;
 delivered images retain native dimensions in both cases. `--primitive
@@ -35,11 +41,11 @@ mixed|auto` selects the existing inference alternatives.
 
 ## Minimal training output
 
-The default writes only corrected `images/` and lossless `masks/`. No JSON files,
-camera metadata, point clouds, alignment caches, warp fields, diagnostic images,
-review page or original photographs are copied or generated. Use the original
-dataset's camera alignment and existing point cloud for training. The corrected
-output is an image/mask replacement, not a standalone reconstructed dataset.
+The default writes corrected `images/`, lossless `masks/` and the updated COLMAP
+model in `sparse/0`. No alignment caches, warp fields, diagnostic images, review
+page or extra original photographs are generated. `--warp-only` writes just
+images and masks; that mode uses the original dataset's camera alignment and
+point cloud for training.
 
 The default pipeline prefetches one input and overlaps CPU fitting, native
 resampling, quality checks and encoding with the next view's GPU rendering and
@@ -52,7 +58,7 @@ one), leaving room for input preparation and GPU submission. Set
 execution and reduces peak host memory. It does not change correction settings
 or retained output files.
 
-On three seeded CinqueTorri views with 1280-pixel working resolution, native JPEG
+In image-only mode (`--warp-only`), on three seeded CinqueTorri views with 1280-pixel working resolution, native JPEG
 quality 95 output, eight OpenMP threads and an RTX 3090, elapsed time was 40.24 s
 serial and 32.46 s pipelined. All images and masks were byte-identical.
 This small comparison includes startup and is not a throughput
@@ -62,9 +68,23 @@ forecast for native-resolution matching or a full dataset.
 can read compatible renders and matches directly from an existing alignment
 folder without copying those caches into the output.
 
-Add `--keep-alignment-data` to retain the review, diagnostics and reusable
-caches, including diagnostic JSON files. Image-warp mode exports no camera
-metadata or point clouds. `--resume` and `--render-only` require this option.
+Add `--review` for `index.html`, original/corrected/render comparisons, native
+detail, masks, correspondence-error maps and per-view methods and validation
+scores. It writes previews and diagnostic JSON, without dense render, matching
+or warp caches. It does retain native originals for inspection. This is an
+explicit review output; leave the flag off for minimal training output.
+
+`--keep-alignment-data` includes the review and additionally retains reusable
+binary caches and warp fields. Image-warp mode exports no camera metadata or
+point clouds. `--resume` requires this cache option and `--warp-only`.
+`--render-only --warp-only` accepts either retention option; `--review` saves
+only render previews in that mode.
+
+For lightweight numerical investigation, `--metrics PATH` writes a compact JSON
+report outside both the input and output datasets, without retaining dense
+intermediates or previews. It records camera acceptance reasons, proposed pose
+errors, image agreement and residual-correction outcomes. This is opt-in; agent
+test reports belong under `/tmp`.
 
 ## Camera refinement in the fixed world frame
 
@@ -73,7 +93,7 @@ considering image deformation:
 
 ```sh
 spirula align-images --data DATASET --reference MODEL.ply --output ALIGNED \
-  --refine-cameras --max-resolution 2560 --all
+  --camera-only --max-resolution 2560 --all
 ```
 
 This mode leaves photographs byte-identical and writes a new COLMAP model in
@@ -88,9 +108,44 @@ the existing calibration. A robust six-parameter refinement reuses the native
 SfM optimizer. Samples need bidirectional overlap, round-trip consistency,
 opaque rendered support and locally consistent depth. Depth ranges receive
 balanced weights so distant background does not dominate nearby structures.
-Reserved correspondences must improve by 10% before a correction is accepted.
-The reported pose errors are depth-balanced means with errors clipped at 20
-working pixels, not median errors or ground-truth accuracy.
+The original RoMa correspondences propose a rigid pose. Low-pass image patches
+at quarter, half and full working resolution refine those correspondences for
+another rigid proposal and a rotation-only proposal. The latter is further
+optimized directly against low-pass patch agreement with held-out patches. It
+fixes camera position when rendered depth does not support reliable translation.
+These are camera transforms, not image deformations.
+
+Every candidate is rendered from the splat and compared with the photograph on
+common patches at fine and coarse scales. Image validation requires mean NCC
+gain above 0.001 without degrading either scale by more than 0.001, with at least
+50 scored patches per scale. If none passes, the geometric proposal is matched
+again with RoMa. It can pass through reduced bidirectional displacement at the
+same source-photo locations, even when render appearance disagrees with pixels.
+This requires 128 common locations, at least half the original support in common,
+and at least 80% as many reliable matches overall. Mean displacement, clipped at
+20 working pixels, must fall by 10% and 0.1 working pixels. Lost original matches
+keep their original error and contribute no improvement. That score over all
+original support must also improve by 10%, preventing a better score merely
+from discarding difficult locations. The selected fresh matches are reused for
+residual correction. No additional dense data is written.
+
+A reduction of the original fitting residual alone does not establish that the
+new render aligns better. The reported pose errors
+are depth-balanced means clipped at 20 working pixels, not median errors or
+ground-truth accuracy. Keeping the input pose does not disable residual image
+correction in the default mode.
+
+With too few usable geometry matches, the command can test up to four distinct
+nearby registered poses in filename order, scanning at most 64 entries in each
+direction. It tries learned matching from those renders, allowing wider initial
+displacements when the user has not set an explicit displacement limit. The
+candidate is re-rendered and re-matched; one additional pose refinement can
+polish it. Recovery requires at least 128 geometry matches, ten held-out matches,
+an error below three working pixels in the final matching and direct fine/coarse
+image agreement. These
+are alternative initializations, not unconditional copying of a neighbour's
+camera. Ordered capture names help this bounded search; unrelated filename
+ordering does not provide the same initialization prior.
 
 The accepted pose is re-rendered and matched again against the untouched photo.
 The review offers initial/refined renders and before/after correspondence-error
@@ -122,11 +177,11 @@ Agent validation runs belong under `/tmp`; production commands must not enable
 diagnostic retention unless the user explicitly requests it. See the production
 output rules in `AGENTS.md`.
 
-To apply both stages in one run:
+Both stages run by default:
 
 ```sh
 spirula align-images --data DATASET --reference MODEL.ply --output CORRECTED \
-  --refine-cameras --residual-warp --max-resolution 2560 --all
+  --max-resolution 2560 --all
 ```
 
 The residual fit uses fresh matches against the accepted camera's render. A
@@ -134,7 +189,7 @@ rejected pose retains the original camera and still permits residual correction.
 The residual stage has its own reserved-patch acceptance check; rejecting it
 does not undo an accepted pose. Only the final residual field resamples the
 original photograph, once, at native resolution. Output encoding follows
-`--image-format` and `--jpeg-quality`; with `--keep-alignment-data`, original
+`--image-format` and `--jpeg-quality`; with `--review`, original
 native photos are retained in the review. Before/after error maps evaluate the residual stage against
 the accepted pose, and the initial render remains available separately.
 
@@ -242,7 +297,8 @@ thin occluders remain difficult.
 
 ## Outputs and training
 
-Review files below require `--keep-alignment-data`.
+Review files below require `--review`, which is also implied by
+`--keep-alignment-data`. Training images and masks are always written.
 
 - `index.html`: one image pane per selected view, with a dropdown for original,
   corrected, render, training-mask and warp-coverage pairs. Blend, draggable wipe
@@ -256,11 +312,13 @@ Review files below require `--keep-alignment-data`.
   COLMAP's convention: `images/photo.jpg` uses `masks/photo.jpg.png`.
 - `manifest.json`: settings, view outcomes, coverage accounting, matching-stage
   counts and before/after correlation and gradient residuals.
-- `review/`: render caches, raw bidirectional predictions with checksums,
-  movement/confidence/cycle diagnostics, coverage and actual-output previews.
+- `review/`: movement/confidence/cycle diagnostics, coverage and actual-output
+  previews. Render caches and raw bidirectional predictions with checksums are
+  included only with `--keep-alignment-data`.
   A rejected candidate is retained separately when quality checks cause fallback.
-- `warp.bin`: versioned source mesh and field data; its spatial index is rebuilt
-  on loading. Version 1 confidence-masked fields are incompatible.
+- `warp.bin` (only with `--keep-alignment-data`): versioned source mesh and field
+  data; its spatial index is rebuilt on loading. Version 1 confidence-masked
+  fields are incompatible.
 - `alignment-error-before.png` / `alignment-error-after.png`: discrepancy from
   bidirectionally consistent RoMa correspondences on the same working-pixel
   scale (green 0, red 10 or more). Gray is unverified matching and magenta is
@@ -367,7 +425,8 @@ run, including an explicit limit when resuming a capped run.
 
 ## Comparing working resolutions
 
-Run with `--keep-alignment-data` and the same sample and seed at different `--max-resolution`
+Use fixed camera poses (`--warp-only`) for resolution comparisons. Run with
+`--review` and the same sample and seed at different `--max-resolution`
 values, for example 640, 1280 and 2560. The output dimensions stay native at every
 setting. The reference rendering and high-resolution RoMa refinement change;
 the coarse matcher stays at width 800. Grid spacing, patch radius and consistency

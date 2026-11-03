@@ -88,6 +88,8 @@ void compare_runs(const fs::path& output,const std::vector<fs::path>& directorie
     std::vector<Run> runs;std::set<int> sizes;
     for(const auto& directory:directories) {
         const auto root=fs::canonical(directory);auto manifest=json_parse_file((root/"manifest.json").string());
+        if(const auto* refined=manifest.find("refine_cameras");refined&&refined->as_bool())
+            throw std::runtime_error("resolution comparison requires fixed camera poses; generate its runs with --warp-only");
         const int resolution=(int)required(manifest,"max_resolution").as_int();
         if(!sizes.insert(resolution).second)throw std::runtime_error("comparison resolutions must be distinct");
         runs.push_back({root,std::move(manifest),resolution});

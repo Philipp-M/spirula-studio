@@ -49,6 +49,11 @@ int main() {
         for(size_t i=0;i<corrected.size();++i)result.rgb[i]=corrected[i]/255.0f;
         const auto score=A::audit(photo,result,render,f);
         check(score.count>10&&score.after>score.before,"reserved actual-output audit did not detect improvement");
+        const auto camera_improvement=A::audit_camera(render,photo,render);
+        check(camera_improvement.accepted&&camera_improvement.gain>0,"camera image validation missed improved render agreement");
+        check(!A::audit_camera(render,render,photo).accepted,"camera image validation accepted a worse actual render");
+        check(!A::audit_camera(render,photo,render,std::vector<uint8_t>((size_t)w*h,0)).accepted,
+              "masked image evidence validated a camera change");
         auto audit_mask=valid;
         for(int y=30;y<100;++y)for(int x=40;x<100;++x)audit_mask[(size_t)y*w+x]=0;
         const auto common=A::audit_common(photo,{result,photo},render,{valid,audit_mask});
@@ -96,6 +101,30 @@ int main() {
         for(auto* direction:{&translation.forward,&translation.backward})for(size_t k=0;k<depth.size();++k)
             direction->warp[2*k]+=(direction==&translation.backward?2.0f:-2.0f)*3/w;
         std::fill(noisy_depth.begin(),noisy_depth.end(),0);
+        const auto match_improvement=A::audit_camera_matches(translation,identity,w,h,{});
+        check(match_improvement.accepted&&match_improvement.before>2.99&&match_improvement.after<.001,
+              "fresh matching audit missed a corrected camera displacement");
+        check(!A::audit_camera_matches(identity,translation,w,h,{}).accepted,
+              "fresh matching audit accepted a larger displacement");
+        auto lost=identity;
+        for(int y=0;y<h;++y)for(int x=w/2;x<w;++x)lost.backward.overlap[(size_t)y*w+x]=0;
+        check(!A::audit_camera_matches(translation,lost,w,h,{}).accepted,
+              "losing difficult correspondences passed camera validation");
+        auto difficult=identity,partial=identity;
+        for(int y=0;y<h;++y)for(int x=0;x<w;++x) {
+            const size_t k=(size_t)y*w+x;
+            if(x>w*.9) {
+                difficult.forward.warp[2*k]+=8.0f/w;difficult.backward.warp[2*k]-=8.0f/w;
+                partial.backward.overlap[k]=0;
+            }
+        }
+        check(!A::audit_camera_matches(difficult,partial,w,h,{}).accepted,
+              "discarding displaced matches masqueraded as camera improvement");
+        check(!A::audit_camera_matches(translation,identity,w,h,{},std::vector<uint8_t>((size_t)w*h,0)).accepted,
+              "masked matches validated a camera correction");
+        auto inconsistent=identity;inconsistent.forward=translation.forward;
+        check(!A::audit_camera_matches(translation,inconsistent,w,h,{}).accepted,
+              "one-way identity matches passed bidirectional camera validation");
         const auto shifted=A::fit(blank,blank,noisy_depth,opacity,translation,no_refinement);
         A::resample(original,w,h,{},shifted,corrected,valid,&coverage);
         for(int y=0;y<h;++y)for(int x=5;x<w-5;++x)check(valid[(size_t)y*w+x],"smooth translation created an interior hole");
