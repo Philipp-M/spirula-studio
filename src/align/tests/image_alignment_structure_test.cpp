@@ -95,8 +95,36 @@ void thin_foreground() {
     }
 }
 
+void oblique_photo_line() {
+    const int w=256,h=192;
+    A::Field f;f.width=w;f.height=h;f.spacing=8;f.columns=w/8+1;f.rows=h/8+1;
+    const size_t n=(size_t)f.columns*f.rows;
+    f.displacement.resize(n);f.depth.assign(n,20);
+    std::vector<float> photo((size_t)w*h),weights(n,1),support(n,1);
+    std::vector<std::array<float,2>> data(n);
+    for(int y=0;y<h;++y)for(int x=0;x<w;++x)
+        photo[(size_t)y*w+x]=.2f+.7f*std::exp(-std::pow((y-60-.35f*x)/2.f,2));
+    for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x)
+        data[(size_t)y*f.columns+x]={0,2*std::sin(x*8.f*.04908739f)};
+    const auto lines=A::detail::straight_lines(f,photo,{});
+    if(lines.size()<8)throw std::runtime_error("oblique photographic line was not detected");
+    if(!A::detail::straight_lines(f,photo,std::vector<uint8_t>(photo.size(),0)).empty())
+        throw std::runtime_error("masked photograph supplied a line constraint");
+    A::detail::regularize(f,data,weights,support,photo,{},std::vector<std::array<float,4>>(n));
+    std::vector<float> vertical(n);for(size_t k=0;k<n;++k)vertical[k]=f.displacement[k][1];
+    float low=1e9,high=-1e9;
+    for(int x=64;x<=192;x+=4) {
+        float displacement=0;
+        A::detail::sample(vertical,f.columns,f.rows,1,(x+.5f)/8,(60+.35f*x+.5f)/8,&displacement);
+        low=std::min(low,displacement);high=std::max(high,displacement);
+    }
+    std::cout<<"oblique source line under contradictory matches: peak-to-peak="<<high-low<<'\n';
+    if(high-low>.7f)throw std::runtime_error("reference mismatch bent a straight photographic line");
+}
+
 int main() {
     try {
+        oblique_photo_line();
         thin_foreground();
         const int w = 512, h = 384;
         for (bool diagonal : {false, true}) for (int period : {32,64,128}) {

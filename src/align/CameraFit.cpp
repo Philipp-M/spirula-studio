@@ -13,6 +13,7 @@ struct Observation {
     double weight;
     int layer;
     bool holdout;
+    std::array<double,2> normal{};
 };
 
 bool project(const camhost::Camera& camera, const sfm::Pose& pose, const sfm::Vec3& point, double* pixel) {
@@ -25,7 +26,7 @@ double error(const camhost::Camera& camera, const sfm::Pose& pose, const Observa
     double pixel[2],delta[2];
     if (!project(camera,pose,o.point,pixel)) return 1e3;
     camhost::pixel_difference(camera,pixel,o.source.data(),delta);
-    return std::hypot(delta[0],delta[1]);
+    return o.normal[0]||o.normal[1]?std::abs(delta[0]*o.normal[0]+delta[1]*o.normal[1]):std::hypot(delta[0],delta[1]);
 }
 
 sfm::Pose fit_pose(const camhost::Camera& camera,const std::vector<Observation>& observations,const std::vector<int>& training,int dof=6) {
@@ -39,6 +40,7 @@ sfm::Pose fit_pose(const camhost::Camera& camera,const std::vector<Observation>&
             const auto& o=observations[training[j]];double pixel[2];
             if(!project(camera,p,o.point,pixel)){r[0]=r[1]=1e3;return;}
             camhost::pixel_difference(camera,pixel,o.source.data(),r);
+            if(o.normal[0]||o.normal[1]){r[0]=r[0]*o.normal[0]+r[1]*o.normal[1];r[1]=0;}
             r[0]*=weights[j];r[1]*=weights[j];
         };
         sfm::pose_detail::lmRefine((int)training.size(),residual,dof,pose,focal_scale,20);
@@ -84,8 +86,17 @@ std::vector<Observation> image_matches(const std::vector<Observation>& observati
     return refined;
 }
 
-bool refine_image_rotation(const camhost::Camera& camera,const std::vector<Observation>& observations,
-                           const Image& photo,const Image& render,const std::vector<uint8_t>& mask,sfm::Pose& pose) {
+bool refine_image_pose(const camhost::Camera& camera,std::vector<Observation> observations,
+                       const Image& photo,const Image& render,const std::vector<uint8_t>& mask,sfm::Pose& pose,int dof) {
+    double scene_scale=1;
+    if(dof==6) {
+        std::vector<double> ranges;for(const auto& o:observations)ranges.push_back(o.point.norm());
+        auto middle=ranges.begin()+ranges.size()/2;std::nth_element(ranges.begin(),middle,ranges.end());
+        scene_scale=*middle;
+        // Finite differences must move subpixel image samples regardless of world units.
+        for(auto& o:observations)o.point=o.point*(1/scene_scale);
+        pose.t=pose.t*(1/scene_scale);
+    }
     const auto pg=detail::gray(photo),rg=detail::gray(render);double gain=0;size_t held=0;
     for(int scale:{4,2}) {
         const int w=std::max(16,photo.width/scale),h=std::max(16,photo.height/scale);
@@ -105,20 +116,21 @@ bool refine_image_rotation(const camhost::Camera& camera,const std::vector<Obser
             if(observations[j].holdout)validation.push_back((int)j);
             else if(j%4==0)train.push_back((int)j);
         }
-        if(train.size()<32||validation.size()<10)return false;
+        if(train.size()<32||validation.size()<10){pose.t=pose.t*scene_scale;return false;}
         auto residual=[&](const sfm::Pose& p,double,int j,double* r) {
             const float score=correlation(p,train[j]);r[0]=score<-1?1e3:std::sqrt(std::max(1e-6f,1-score));r[1]=0;
         };
         auto cost=[&](const sfm::Pose& p){double sum=0,r[2];for(size_t j=0;j<train.size();++j){residual(p,1,(int)j,r);sum+=r[0]*r[0];}return sum;};
         if(scale==4&&cost(sfm::Pose{})<cost(pose))pose=sfm::Pose{};
         const auto previous=pose;double focal=1;
-        sfm::pose_detail::lmRefine((int)train.size(),residual,3,pose,focal,12);
+        sfm::pose_detail::lmRefine((int)train.size(),residual,dof,pose,focal,12);
         double improvement=0;
         for(int j:validation)improvement+=std::max(-1.0f,correlation(pose,j))-std::max(-1.0f,correlation(previous,j));
         if(improvement<0)pose=previous;
         gain=0;held=validation.size();
         for(int j:validation)gain+=std::max(-1.0f,correlation(pose,j))-correlation(sfm::Pose{},j);
     }
+    pose.t=pose.t*scene_scale;
     return held>=10&&gain/held>.001;
 }
 }
@@ -131,6 +143,7 @@ const char* camera_fit_status(CameraFitStatus status) {
         case CameraFitStatus::Accepted: return "accepted";
         case CameraFitStatus::ImageValidated: return "image_validated";
         case CameraFitStatus::MatchValidated: return "fresh_matches_validated";
+        case CameraFitStatus::StructureValidated: return "rendered_edges_validated";
         case CameraFitStatus::ImageRejected: return "render_did_not_improve";
     }
     return "unknown";
@@ -139,7 +152,7 @@ const char* camera_fit_status(CameraFitStatus status) {
 CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector<float>& opacity,
                               const roma::PairPrediction& matches, const Settings& settings,
                               const camhost::Camera& camera, const std::vector<uint8_t>& mask,
-                              const Image* photo,const Image* render) {
+                              const Image* photo,const Image* render,bool structure_only) {
     CameraAlignment result;
     const int width=camera.width,height=camera.height;
     auto valid_prediction=[](const roma::Prediction& p){return p.width>0&&p.height>0&&p.warp.size()==(size_t)p.width*p.height*2&&p.overlap.size()==(size_t)p.width*p.height;};
@@ -148,7 +161,7 @@ CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector
         !std::isfinite(camera.fx)||!std::isfinite(camera.fy)||!std::isfinite(camera.cx)||!std::isfinite(camera.cy)||
         !valid_prediction(matches.forward)||!valid_prediction(matches.backward)||
         !(settings.min_overlap>0&&settings.min_overlap<=1)||!(settings.max_cycle>0)||!std::isfinite(settings.max_cycle)||
-        settings.max_displacement<0||!std::isfinite(settings.max_displacement))
+        settings.max_displacement<0||!std::isfinite(settings.max_displacement)||settings.spacing<4)
         throw std::runtime_error("invalid camera alignment inputs");
     std::vector<Observation> observations;
     std::map<int,int> populations;
@@ -196,29 +209,79 @@ CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector
     if(photo&&render) {
         if(photo->width!=width||photo->height!=height||render->width!=width||render->height!=height||
             photo->rgb.size()!=(size_t)width*height*3||render->rgb.size()!=photo->rgb.size())throw std::runtime_error("camera images differ from calibration");
-        const auto refined=image_matches(observations,*photo,*render,mask);
-        const auto image_pose=fit_pose(camera,refined,training);
-        double refined_before=0,refined_after=0,raw_after=0;
-        for(size_t k=0;k<observations.size();++k)if(observations[k].holdout) {
-            const auto& o=observations[k];
-            refined_before+=o.weight*std::min(20.0,error(camera,sfm::Pose{},refined[k]));
-            refined_after+=o.weight*std::min(20.0,error(camera,image_pose,refined[k]));
-            raw_after+=o.weight*std::min(20.0,error(camera,image_pose,o));
+        if(!structure_only) {
+            const auto refined=image_matches(observations,*photo,*render,mask);
+            const auto image_pose=fit_pose(camera,refined,training);
+            double refined_before=0,refined_after=0,raw_after=0;
+            for(size_t k=0;k<observations.size();++k)if(observations[k].holdout) {
+                const auto& o=observations[k];
+                refined_before+=o.weight*std::min(20.0,error(camera,sfm::Pose{},refined[k]));
+                refined_after+=o.weight*std::min(20.0,error(camera,image_pose,refined[k]));
+                raw_after+=o.weight*std::min(20.0,error(camera,image_pose,o));
+            }
+            result.photometric_error_after=raw_after/total;
+            result.photometric_candidate=refined_after<.995*refined_before&&raw_after<before+.5*total;
+            set_correction(result.photometric_correction,image_pose);
+            auto rotation=fit_pose(camera,refined,training,3);
+            const bool image_gain=refine_image_pose(camera,observations,*photo,*render,mask,rotation,3);
+            refined_after=0;raw_after=0;
+            for(size_t k=0;k<observations.size();++k)if(observations[k].holdout) {
+                const auto& o=observations[k];
+                refined_after+=o.weight*std::min(20.0,error(camera,rotation,refined[k]));
+                raw_after+=o.weight*std::min(20.0,error(camera,rotation,o));
+            }
+            result.rotation_error_after=raw_after/total;
+            result.rotation_candidate=image_gain&&raw_after<before+total;
+            set_correction(result.rotation_correction,rotation);
+            auto direct=image_pose;
+            const bool direct_gain=refine_image_pose(camera,observations,*photo,*render,mask,direct,6);
+            raw_after=0;
+            for(const auto& o:observations)if(o.holdout)raw_after+=o.weight*std::min(20.0,error(camera,direct,o));
+            result.direct_error_after=raw_after/total;
+            result.direct_candidate=direct_gain&&raw_after<before+total;
+            set_correction(result.direct_correction,direct);
         }
-        result.photometric_error_after=raw_after/total;
-        result.photometric_candidate=refined_after<.995*refined_before&&raw_after<before+.5*total;
-        set_correction(result.photometric_correction,image_pose);
-        auto rotation=fit_pose(camera,refined,training,3);
-        const bool image_gain=refine_image_rotation(camera,observations,*photo,*render,mask,rotation);
-        refined_after=0;raw_after=0;
-        for(size_t k=0;k<observations.size();++k)if(observations[k].holdout) {
-            const auto& o=observations[k];
-            refined_after+=o.weight*std::min(20.0,error(camera,rotation,refined[k]));
-            raw_after+=o.weight*std::min(20.0,error(camera,rotation,o));
+        Field grid;grid.width=width;grid.height=height;grid.spacing=settings.spacing;
+        grid.columns=(width+grid.spacing-1)/grid.spacing+1;grid.rows=(height+grid.spacing-1)/grid.spacing+1;
+        grid.displacement.resize((size_t)grid.columns*grid.rows);
+        const auto anchors=detail::structure_matches(grid,detail::gray(*photo),detail::gray(*render),depth,opacity,matches,settings,mask);
+        auto combined=observations;auto indices=training;size_t held=0;double edge_before=0;
+        for(int gy=0;gy<grid.rows;++gy)for(int gx=0;gx<grid.columns;++gx) {
+            const auto& a=anchors[(size_t)gy*grid.columns+gx];if(a[3]<=0)continue;
+            const float x=std::min(gx*grid.spacing,width)-.5f,y=std::min(gy*grid.spacing,height)-.5f;
+            float qx,qy,c;if(!detail::match(matches.backward,x,y,width,height,qx,qy,c))continue;
+            const float offset=a[2]-a[0]*(qx-x)-a[1]*(qy-y);qx+=a[0]*offset;qy+=a[1]*offset;
+            const int ix=(int)std::lround(qx),iy=(int)std::lround(qy);
+            if(ix<8||iy<8||ix>=width-8||iy>=height-8)continue;
+            float z=1e30f;
+            for(int j=-4;j<=4;++j)for(int i=-4;i<=4;++i) {
+                const size_t k=(size_t)(iy+j)*width+ix+i;const float v=depth[k];
+                if(!(v>0)||!std::isfinite(v)||!(opacity[k]>=.95f))continue;
+                bool stable=true;for(int d:{-1,1,-width,width})stable&=std::abs(depth[k+d]-v)<.04f*v;
+                if(stable)z=std::min(z,v);
+            }
+            if(z==1e30f)continue;
+            const double pixel[2]={qx,qy};double ray[3];if(!camhost::pixel_ray(camera,pixel,ray))continue;
+            const bool holdout=(gx+3*gy)%7==3;
+            if(!holdout)indices.push_back((int)combined.size());else{++held;edge_before+=std::abs(a[2]);}
+            combined.push_back({{z*ray[0],z*ray[1],z*ray[2]},{x,y},{qx,qy},8,0,holdout,{a[0],a[1]}});
         }
-        result.rotation_error_after=raw_after/total;
-        result.rotation_candidate=image_gain&&raw_after<before+total;
-        set_correction(result.rotation_correction,rotation);
+        if(held>=12&&combined.size()>=observations.size()+64) {
+            for(double weight:{8.,2.}) {
+                for(size_t j=observations.size();j<combined.size();++j)combined[j].weight=weight;
+                const auto structural=fit_pose(camera,combined,indices);
+                double edge_after=0,raw_after=0;
+                for(size_t j=0;j<combined.size();++j)if(combined[j].holdout) {
+                    const double e=error(camera,structural,combined[j]);
+                    if(j>=observations.size())edge_after+=e;else raw_after+=combined[j].weight*std::min(20.,e);
+                }
+                result.structure_error_before=edge_before/held;result.structure_error_after=edge_after/held;
+                result.structure_geometry_error=raw_after/total;
+                result.structure_candidate=edge_after<.8*edge_before&&edge_before-edge_after>.25*held&&raw_after<before+.5*total;
+                set_correction(result.structure_correction,structural);
+                if(result.structure_candidate)break;
+            }
+        }
     }
     if (!(after < .9*before)) {result.status=CameraFitStatus::NoImprovement;return result;}
     result.accepted=true;result.status=CameraFitStatus::Accepted;return result;

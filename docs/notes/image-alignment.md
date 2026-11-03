@@ -115,6 +115,14 @@ optimized directly against low-pass patch agreement with held-out patches. It
 fixes camera position when rendered depth does not support reliable translation.
 These are camera transforms, not image deformations.
 
+A direct six-parameter image refinement complements the rotation-only proposal.
+It normalizes scene range internally so numerical translation derivatives remain
+useful regardless of world-coordinate units. The exported translation remains in
+the original world units. Foreground gradient-profile matches also supply
+normal-only camera constraints, with depth taken from nearby opaque, locally
+stable rendered support. Their weights are reduced if the fit damages the
+held-out interior matches. Separate edge locations are reserved for validation.
+
 Every candidate is rendered from the splat and compared with the photograph on
 common patches at fine and coarse scales. Image validation requires mean NCC
 gain above 0.001 without degrading either scale by more than 0.001, with at least
@@ -128,6 +136,23 @@ keep their original error and contribute no improvement. That score over all
 original support must also improve by 10%, preventing a better score merely
 from discarding difficult locations. The selected fresh matches are reused for
 residual correction. No additional dense data is written.
+
+An edge-guided proposal can also pass through fresh gradient-profile matching
+on its actual render: at least 12 common held-out edges, 70% of the original
+edge support in common, 80% of the original total support, and a 20% and
+0.25-pixel reduction in normal displacement. Missing original matches earn no
+improvement. Fine and coarse image agreement may each lose at most 0.01 NCC
+through this route. Image-validated proposals retain their existing validation.
+An added direct or edge-guided proposal must improve mean image agreement by
+another 0.001 NCC to replace an already accepted proposal. Marginal score
+differences do not displace a camera that already validated.
+
+When a corrected camera still has a substantial structural residual, one more
+edge-guided pose step is allowed. It reuses the already computed RoMa matches
+to propose the update, then re-renders and validates before another neural
+matching pass. Rejected trials retain the accepted pose and its matches. This
+is bounded to one additional step; ordinary views do not enter an open-ended
+render/match loop. Review metadata records candidates and accepted extra steps.
 
 A reduction of the original fitting residual alone does not establish that the
 new render aligns better. The reported pose errors
@@ -263,8 +288,8 @@ These correspondences constrain only displacement perpendicular to the edge in
 the existing mesh solver. They do not infer motion along a featureless line or
 increase global smoothing. Near accepted foreground constraints, fine-scale
 source ridges propagate motion along poorly matched extensions, so an unsupported
-tip does not bend toward background motion. Reliable correspondence regions keep
-the original regularization. Existing deformation limits, one-pass native sampling
+tip does not bend toward background motion. This propagation is limited to
+weakly supported correspondence regions. Existing deformation limits, one-pass native sampling
 and reserved-patch acceptance still apply. This is a local image alignment cue,
 not a physical lens calibration; camera intrinsics remain unchanged. If these
 additional constraints cause unresolved deformation or fail the image audit, the
@@ -274,6 +299,16 @@ the outer 10% of the image loses more than 0.02 NCC over at least 100 audit patc
 This promotion check preserves a conservative fallback in poorly rendered views;
 it does not veto an already usable RoMa correction or a validated camera pose.
 Both candidates sample the original pixels; resampling is not chained.
+
+Straight segments detected independently in the photograph protect against a
+misshapen reference. Signed gradients must trace the same straight edge through
+nine samples, over 32- and 64-pixel spans. Arbitrary segment directions contribute
+normal-only second-difference constraints through bilinear mesh interpolation.
+A 0.25-pixel curvature allowance preserves small smooth corrections; larger local
+bends are penalized even if reference matching prefers them. These constraints
+also respect source masks. The conservative retry disables both the added edge
+matches and the source-line constraints, preserving the original RoMa fallback.
+
 `--min-overlap` and `--min-correlation` control soft weighting, `--max-cycle`
 controls cycle weighting, and `--max-displacement` excludes implausible anchors.
 Its default, `0`, resolves to 5% of the working image diagonal. A positive value

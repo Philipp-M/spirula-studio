@@ -3,6 +3,36 @@
 #include <stdexcept>
 
 namespace spirula::align {
+MatchAudit audit_camera_structure(const Image& photo,const Image& before,const Image& after,
+    const std::vector<float>& before_depth,const std::vector<float>& before_opacity,
+    const std::vector<float>& after_depth,const std::vector<float>& after_opacity,
+    const roma::PairPrediction& matches,const Settings& settings,const std::vector<uint8_t>& mask) {
+    const size_t pixels=(size_t)photo.width*photo.height;
+    if(photo.width<16||photo.height<16||settings.spacing<4||before.width!=photo.width||after.width!=photo.width||
+       before.height!=photo.height||after.height!=photo.height||photo.rgb.size()!=pixels*3||before.rgb.size()!=pixels*3||after.rgb.size()!=pixels*3||
+       before_depth.size()!=pixels||after_depth.size()!=pixels||before_opacity.size()!=pixels||after_opacity.size()!=pixels||(!mask.empty()&&mask.size()!=pixels))
+        throw std::runtime_error("invalid camera structure audit dimensions");
+    Field grid;grid.width=photo.width;grid.height=photo.height;grid.spacing=settings.spacing;
+    grid.columns=(grid.width+grid.spacing-1)/grid.spacing+1;grid.rows=(grid.height+grid.spacing-1)/grid.spacing+1;
+    grid.displacement.resize((size_t)grid.columns*grid.rows);
+    const auto gray=detail::gray(photo);
+    const auto a=detail::structure_matches(grid,gray,detail::gray(before),before_depth,before_opacity,matches,settings,mask);
+    const auto b=detail::structure_matches(grid,gray,detail::gray(after),after_depth,after_opacity,matches,settings,mask);
+    MatchAudit result;
+    for(int y=0;y<grid.rows;++y)for(int x=0;x<grid.columns;++x)if((x+3*y)%7==3) {
+        const size_t k=(size_t)y*grid.columns+x;const bool va=a[k][3]>0,vb=b[k][3]>0;
+        result.before_count+=va;result.after_count+=vb;
+        if(va){result.supported_before+=std::abs(a[k][2]);result.supported_after+=vb?std::abs(b[k][2]):std::abs(a[k][2]);}
+        if(va&&vb){++result.common_count;result.before+=std::abs(a[k][2]);result.after+=std::abs(b[k][2]);}
+    }
+    if(result.common_count){result.before/=result.common_count;result.after/=result.common_count;}
+    if(result.before_count){result.supported_before/=result.before_count;result.supported_after/=result.before_count;}
+    result.accepted=result.common_count>=12&&result.common_count>=.7*result.before_count&&
+        result.after_count>=.8*result.before_count&&result.after<.8*result.before&&result.before-result.after>.25&&
+        result.supported_after<.8*result.supported_before;
+    return result;
+}
+
 MatchAudit audit_camera_matches(const roma::PairPrediction& before,const roma::PairPrediction& after,
                                 int width,int height,const Settings& settings,const std::vector<uint8_t>& mask) {
     if(width<16||height<16||(!mask.empty()&&mask.size()!=(size_t)width*height))

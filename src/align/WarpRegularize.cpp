@@ -94,10 +94,13 @@ std::vector<float> depth_support(const Field& f, const std::vector<float>& weigh
 
 void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>& weights,
                 const std::vector<float>& support, const std::vector<float>& photo,
-                const std::vector<uint8_t>& mask, const std::vector<std::array<float,4>>& structure) {
+                const std::vector<uint8_t>& mask, const std::vector<std::array<float,4>>& structure,bool preserve_lines) {
     const size_t n = data.size();
     const auto broad = f.displacement;
     const auto edges = edge_tangents(f, photo, mask, structure);
+    const auto lines = preserve_lines?straight_lines(f,photo,mask):std::vector<LineConstraint>{};
+    f.source_lines=lines.size();
+    std::vector<float> line_weights(lines.size()),line_diagonal(n);
     std::vector<Row> matrix(n);
     std::array<int,row_size> offsets{};
     auto coupling = [&](size_t a, size_t b) {
@@ -160,6 +163,13 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
                 for (int c = 0; c < 2; ++c) output[k][c] += matrix[k][j]*input[q][c];
             }
         }
+        for(size_t j=0;j<lines.size();++j)if(line_weights[j]>0) {
+            const auto& line=lines[j];float value=0;
+            for(int i=0;i<line.count;++i)for(int c=0;c<2;++c)
+                value+=line.coefficients[i]*line.normal[c]*input[line.nodes[i]][c];
+            for(int i=0;i<line.count;++i)for(int c=0;c<2;++c)
+                output[line.nodes[i]][c]+=line_weights[j]*line.coefficients[i]*line.normal[c]*value;
+        }
     };
     for (int robust = 0; robust < 4; ++robust) {
 #pragma omp parallel for schedule(static)
@@ -171,11 +181,28 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
                 rhs[k][c] = weight*(data[k][c]-broad[k][c])+structure[k][3]*structure[k][c]*
                     (structure[k][2]-structure[k][0]*broad[k][0]-structure[k][1]*broad[k][1]);
         }
+        std::fill(line_diagonal.begin(),line_diagonal.end(),0);
+        for(size_t j=0;j<lines.size();++j) {
+            const auto& line=lines[j];float curvature=0,base=0;
+            for(int i=0;i<line.count;++i)for(int c=0;c<2;++c) {
+                const float coefficient=line.coefficients[i]*line.normal[c];
+                base+=coefficient*broad[line.nodes[i]][c];
+                curvature+=coefficient*(broad[line.nodes[i]][c]+value[line.nodes[i]][c]);
+            }
+            // Subpixel curvature can be lens correction; larger local bends need photographic support.
+            line_weights[j]=robust?32:0;
+            const float target=std::clamp(curvature,-.25f,.25f);
+            for(int i=0;i<line.count;++i) {
+                const size_t k=line.nodes[i];const float coefficient=line.coefficients[i];
+                line_diagonal[k]+=line_weights[j]*coefficient*coefficient;
+                for(int c=0;c<2;++c)rhs[k][c]-=line_weights[j]*coefficient*line.normal[c]*(base-target);
+            }
+        }
         apply(value,product);
 #pragma omp parallel for schedule(static)
         for (size_t k = 0; k < n; ++k) for (int c = 0; c < 2; ++c) {
             residual[k][c] = rhs[k][c]-product[k][c];
-            preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]);
+            preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]+line_diagonal[k]);
         }
         direction = preconditioned;
         double rz = dot(residual,preconditioned);
@@ -189,7 +216,7 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
             for (size_t k = 0; k < n; ++k) for (int c = 0; c < 2; ++c) {
                 value[k][c] += alpha*direction[k][c];
                 residual[k][c] -= alpha*product[k][c];
-                preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]);
+                preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]+line_diagonal[k]);
             }
             const double next = dot(residual,preconditioned);
             const float beta = (float)(next/rz); rz = next;

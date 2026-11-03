@@ -263,7 +263,7 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     const auto structure=refine_structure?detail::structure_matches(f,pg,rg,depth,opacity,matches,s,source_mask):
         std::vector<std::array<float,4>>(n);
     f.structure_anchors=std::count_if(structure.begin(),structure.end(),[](const auto& a){return a[3]>0;});
-    detail::regularize(f,data,weights,support,pg,source_mask,structure);
+    detail::regularize(f,data,weights,support,pg,source_mask,structure,refine_structure);
     auto labels=surfaces(f,support);
     const auto fitted=f.displacement;std::vector<float> strength(n,1);
     auto safety_weights=weights;for(float& v:safety_weights)v+=.001f;
@@ -302,7 +302,7 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
         for(size_t k=0;k<n;++k)for(int c=0;c<2;++c)f.displacement[k][c]=safe_base[k][c]+(fitted[k][c]-safe_base[k][c])*strength[k];
         if(attempt==31)f.fallback=true;
     }
-    if(f.fallback&&f.structure_anchors>0) {
+    if(f.fallback&&(f.structure_anchors>0||f.source_lines>0)) {
         auto conservative=fit(photo,render,depth,opacity,matches,s,source_mask,false);
         conservative.structure_fallback=true;return conservative;
     }
