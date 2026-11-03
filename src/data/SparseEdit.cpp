@@ -15,6 +15,8 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
+#include <iomanip>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -106,7 +108,8 @@ void move_w2c(const Sim3& T, double q[4], double t[3]) {
 std::string filter_images_bin(const std::string& src,
                               const std::set<std::string>& drop,
                               std::set<int32_t>& dropped_ids,
-                              const Sim3* moved) {
+                              const Sim3* moved,const std::map<int32_t,ColmapImage>* poses=nullptr,
+                              const SparseObservationTransform& transform={}) {
     const char* p = src.data();
     const char* end = src.data() + src.size();
     if ((size_t)(end - p) < sizeof(uint64_t))
@@ -143,6 +146,18 @@ std::string filter_images_bin(const std::string& src,
             std::memcpy(pose, &out[at + 4], sizeof pose);
             move_w2c(*moved, pose, pose + 4);
             std::memcpy(&out[at + 4], pose, sizeof pose);
+        }
+        if (poses) if (const auto found=poses->find(id); found!=poses->end()) {
+            std::memcpy(&out[at+4],found->second.qvec.data(),4*sizeof(double));
+            std::memcpy(&out[at+4+4*sizeof(double)],found->second.tvec.data(),3*sizeof(double));
+            if(transform)for(uint64_t j=0;j<pts;++j) {
+                const size_t offset=at+(size_t)(p-row)-pt_bytes+j*24;
+                double xy[2];std::memcpy(xy,&out[offset],sizeof xy);
+                transform(id,xy[0],xy[1]);
+                if(!std::isfinite(xy[0])||!std::isfinite(xy[1]))throw std::runtime_error("invalid transformed observation");
+                std::memcpy(&out[offset],xy,sizeof xy);
+            }
+            out.replace(at+(size_t)(name-row),image_name.size(),found->second.name);
         }
         kept++;
     }
@@ -240,7 +255,8 @@ std::string filter_points3d_bin(const std::string& src,
 std::string filter_images_txt(const std::string& src,
                               const std::set<std::string>& drop,
                               std::set<int32_t>& dropped_ids,
-                              const Sim3* moved) {
+                              const Sim3* moved,const std::map<int32_t,ColmapImage>* poses=nullptr,
+                              const SparseObservationTransform& transform={}) {
     std::string out;
     out.reserve(src.size());
     size_t pos = 0;
@@ -262,30 +278,43 @@ std::string filter_images_txt(const std::string& src,
             out.append(src, start, pos - start);
             continue;
         }
-        // id qw qx qy qz tx ty tz camera_id name
         const size_t obs_start = pos;
         std::string obs;
         take_line(pos, obs);
         int32_t id = 0;
         char name[1024] = {0};
         double d[7];
-        int cam = 0;
+        int cam = 0, name_start = 0;
         const bool parsed =
-            std::sscanf(line.c_str() + b, "%d %lf %lf %lf %lf %lf %lf %lf %d %1023s",
+            std::sscanf(line.c_str() + b, "%d %lf %lf %lf %lf %lf %lf %lf %d %n%1023s",
                         &id, &d[0], &d[1], &d[2], &d[3], &d[4], &d[5], &d[6],
-                        &cam, name) == 10;
+                        &cam, &name_start, name) == 10;
         if (parsed && drop.count(leaf_of(name))) {
             dropped_ids.insert(id);
             continue;
         }
-        if (parsed && moved) {
-            move_w2c(*moved, d, d + 4);
+        const ColmapImage* replacement=nullptr;
+        if(poses)if(const auto found=poses->find(id);found!=poses->end())replacement=&found->second;
+        if (parsed && (moved || replacement)) {
+            if(moved)move_w2c(*moved, d, d + 4);
+            if(replacement){std::copy(replacement->qvec.begin(),replacement->qvec.end(),d);std::copy(replacement->tvec.begin(),replacement->tvec.end(),d+4);}
             char buf[512];
             std::snprintf(buf, sizeof buf,
-                          "%d %.17g %.17g %.17g %.17g %.17g %.17g %.17g %d %s\n",
-                          id, d[0], d[1], d[2], d[3], d[4], d[5], d[6], cam, name);
-            out += buf;
-            out.append(src, obs_start, pos - obs_start);
+                          "%d %.17g %.17g %.17g %.17g %.17g %.17g %.17g %d ",
+                          id, d[0], d[1], d[2], d[3], d[4], d[5], d[6], cam);
+            out += buf;out += replacement?replacement->name:line.substr(b+name_start);out += '\n';
+            if(replacement&&transform) {
+                std::istringstream input(obs);std::ostringstream mapped;mapped<<std::setprecision(17);
+                double x,y;int64_t point;bool first=true;
+                while(input>>x) {
+                    if(!(input>>y>>point))throw std::runtime_error("invalid COLMAP observation");
+                    transform(id,x,y);
+                    if(!std::isfinite(x)||!std::isfinite(y))throw std::runtime_error("invalid transformed observation");
+                    if(!first)mapped<<' ';first=false;mapped<<x<<' '<<y<<' '<<point;
+                }
+                if(!input.eof())throw std::runtime_error("invalid COLMAP observation");
+                out+=mapped.str();out+='\n';
+            }else out.append(src, obs_start, pos - obs_start);
             continue;
         }
         out.append(src, start, pos - start);
@@ -890,6 +919,28 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
     if (!fs::exists(images, ec)) write_file(images, b.images);
     if (!b.frames.empty() && !fs::exists(frames, ec)) write_file(frames, b.frames);
     return written;
+}
+
+void sparse_write_camera_copy(const std::string& dataset_dir,const std::string& out_dir,
+                              const std::map<int32_t,ColmapImage>& poses,const SparseObservationTransform& transform) {
+    SparseBaseline base=load_baseline(dataset_dir);
+    if(base.format!=SparseFormat::Colmap)throw std::runtime_error("camera refinement export requires COLMAP");
+    if(!base.frames.empty()||fs::exists(fs::path(base.model_dir)/"frames.txt"))
+        throw std::runtime_error("camera refinement export does not support rig frames");
+    const auto original=base.text?read_images_text(base.model_dir):read_images_binary(base.model_dir);
+    for(const auto& [id,pose]:poses) {
+        if(!original.count(id))throw std::runtime_error("camera correction references an unknown image");
+        if(pose.name.empty()||pose.name.find_first_of("\r\n")!=std::string::npos||pose.name.find('\0')!=std::string::npos)
+            throw std::runtime_error("invalid corrected image name");
+        double norm=0;
+        for(double v:pose.qvec){if(!std::isfinite(v))throw std::runtime_error("invalid camera rotation");norm+=v*v;}
+        for(double v:pose.tvec)if(!std::isfinite(v))throw std::runtime_error("invalid camera translation");
+        if(std::abs(norm-1)>1e-6)throw std::runtime_error("camera rotation must be a unit quaternion");
+    }
+    std::set<int32_t> dropped;
+    const auto images=base.text?filter_images_txt(base.images,{},dropped,nullptr,&poses,transform):filter_images_bin(base.images,{},dropped,nullptr,&poses,transform);
+    sparse_write_copy(dataset_dir,out_dir,{},nullptr,&base);
+    write_file(fs::path(out_dir)/"sparse/0"/(base.text?"images.txt":"images.bin"),images);
 }
 
 }  // namespace spirula

@@ -59,6 +59,7 @@ const number=(v,n=4)=>v==null?'—':v.toFixed(n);
 const versions=v=>(v.versions||[v]).map(c=>({...c,resolution:c.resolution??data.max_resolution}));
 const summary=document.querySelector('#summary');
 summary.textContent=`Selected: ${data.views.length} / ${data.population} · seed ${data.seed} · reference ${data.reference}`;
+if(data.refine_cameras){const p=document.createElement('p');p.textContent=data.residual_warp?'Camera refinement followed by residual image correction. The COLMAP copy in sparse/0 contains the accepted poses, output filenames and transported 2D observations. World coordinates and georeferencing are preserved.':'Camera refinement: source photographs are unchanged. The corrected COLMAP model is in sparse/0; point coordinates and georeferencing are preserved. Compare the photograph against the initial and refined renders.';document.querySelector('header').append(p);}
 if(data.comparison){const p=document.createElement('p');p.textContent='Every version is compared with the same highest-resolution reference render. Common NCC and gradient scores use identical patch locations and shared valid support at each evaluation size. Scores from the individual runs are available in their manifests.';document.querySelector('header').append(p);}
 const global=document.createElement('div');global.className='controls';global.id='resolution-controls';
 if(data.comparison){
@@ -80,6 +81,7 @@ const toolbar=document.createElement('div');toolbar.className='controls toolbar'
 toolbar.innerHTML='<strong>Set all views</strong><label>Compare <select aria-label="All views comparison"><option value="original-corrected">Original ↔ corrected</option><option value="original-render">Original ↔ render</option><option value="corrected-render">Corrected ↔ render</option><option value="corrected-mask">Corrected ↔ training mask</option><option value="corrected-coverage">Corrected ↔ warp coverage</option></select></label><label>Mode <select aria-label="All views mode"><option value="blend">Blend</option><option value="wipe">Wipe</option><option value="difference">Difference</option></select></label><label>Blend / position <input aria-label="All views blend" type="range" min="0" max="100" value="50"><output>50%</output></label>';
 const root=document.querySelector('#views');root.before(toolbar);
 const allPair=toolbar.querySelector('[aria-label="All views comparison"]'),allMode=toolbar.querySelector('[aria-label="All views mode"]'),allBlend=toolbar.querySelector('input');
+if(data.refine_cameras)allPair.value=data.residual_warp?'corrected-render':'original-render';
 const applyAll=document.createElement('button');applyAll.type='button';applyAll.textContent='Apply to all';toolbar.append(applyAll);
 applyAll.addEventListener('click',()=>cards.forEach(c=>{c.setPair(allPair.value);c.setMode(allMode.value);c.setBlend(allBlend.value)}));
 allPair.addEventListener('change',()=>cards.forEach(c=>c.setPair(allPair.value)));
@@ -108,9 +110,9 @@ for(const [i,v] of data.views.entries()){
  pane.append(stage);figure.append(pane);card.append(figure);
  const pairSelect=controls.querySelector('[aria-label="Image pair"]'),mode=controls.querySelector('[aria-label="Comparison mode"]'),range=controls.querySelector('input[type=range]'),zoom=controls.querySelector('[aria-label="Comparison zoom"]'),native=controls.querySelector('[aria-label="Photograph resolution"]'),mask=controls.querySelector('input[type=checkbox]');
  let pairs=[],pair=null,generation=0;
- const original={kind:'photo',label:'Original photo',preview:v.preview+'/original.png',native:v.original_native};
- const render={kind:'render',label:'Splat render',preview:v.preview+'/render.png'};
- const corrected=c=>({kind:'photo',label:data.comparison?sizeLabel(c.resolution)+' correction':'Corrected photo',preview:c.preview+'/corrected.png',native:c.image,version:c});
+ const original={kind:'photo',label:'Original photo',preview:v.preview+'/original.png',native:v.original_native||(data.refine_cameras&&!data.residual_warp?v.image:null)};
+ const render={kind:'render',label:data.refine_cameras?'Render at refined pose':'Splat render',preview:v.preview+'/render.png'};
+ const corrected=c=>({kind:'photo',label:data.refine_cameras&&!data.residual_warp?'Unchanged source photograph':data.comparison?sizeLabel(c.resolution)+' correction':'Corrected photo',preview:c.preview+'/corrected.png',native:c.image,version:c});
  function center(){
   const a=stage.getBoundingClientRect(),b=pane.getBoundingClientRect();
   return {x:a.width?(b.left+pane.clientWidth/2-a.left)/a.width:.5,y:a.height?(b.top+pane.clientHeight/2-a.top)/a.height:.5};
@@ -169,14 +171,17 @@ for(const [i,v] of data.views.entries()){
  for(const version of available){
   const q=version.diagnostic_preview||version.preview,d=version.matching;
   if(d){const stats=document.createElement('p');stats.textContent=`${sizeLabel(version.resolution)} · sampled: ${d.sampled} → finite: ${d.finite} → overlap: ${d.overlap} → round trip: ${d.cycle} → displacement: ${d.bounded}. Legacy filters: opacity ${d.old_opacity} → depth ${d.old_depth} → correlation ${d.old_correlation}. Median movement ${d.median_displacement.toFixed(3)} working px; round trip ${d.median_cycle.toFixed(3)} working px. These diagnostics do not determine image validity.`;details.append(stats);}
-  for(const [label,file] of [['RoMa overlap: white = high','overlap'],['Round trip: green = consistent, red = 5 px or more','cycle'],['Raw render-to-photo movement','raw-flow'],['Final render-to-photo movement','deformation'],['Actual source coverage: white = covered','coverage']]){const caption=document.createElement('p');caption.textContent=`${sizeLabel(version.resolution)} · ${label}`;const img=document.createElement('img');img.loading='lazy';img.style.cssText='max-width:100%;display:block';img.src=pathUrl(q+'/'+file+'.png');img.alt=label;details.append(caption,img);}
+  const maps=[['RoMa overlap: white = high','overlap'],['Round trip: green = consistent, red = 5 px or more','cycle'],['Raw render-to-photo movement','raw-flow'],['Final render-to-photo movement','deformation'],['Actual source coverage: white = covered','coverage']];
+  if(version.alignment_error_maps)for(const state of ['before','after'])maps.push([`Correspondence error ${state}: green = 0, red = 10 working px or more; gray = unverified; magenta = uncovered`,'alignment-error-'+state]);
+  for(const [label,file] of maps){const caption=document.createElement('p');caption.textContent=`${sizeLabel(version.resolution)} · ${label}`;const img=document.createElement('img');img.loading='lazy';img.style.cssText='max-width:100%;display:block';img.src=pathUrl(q+'/'+file+'.png');img.alt=label;details.append(caption,img);}
  }card.append(details);
  function refresh(){
   const selected=available.filter(c=>chosen.has(c.resolution)),previous=pairSelect.value;pairs=[];
   const add=(family,id,label,a,b,maskVersion,group='Photographs and render')=>pairs.push({family,id,label,a,b,maskVersion,group});
   const suffix=c=>data.comparison?' · '+sizeLabel(c.resolution):'';
-  for(const c of selected)add('original-corrected','original-corrected-'+c.resolution,'Original ↔ corrected'+suffix(c),original,corrected(c),c);
+  if(!data.refine_cameras||data.residual_warp)for(const c of selected)add('original-corrected','original-corrected-'+c.resolution,'Original ↔ corrected'+suffix(c),original,corrected(c),c);
   add('original-render','original-render','Original ↔ render',original,render,null);
+  if(v.camera_refined)add('initial-render','initial-render','Original ↔ initial render',original,{kind:'render',label:'Render at initial pose',preview:v.preview+'/initial-render.png'},null);
   for(const c of selected){
    add('corrected-render','corrected-render-'+c.resolution,'Corrected ↔ render'+suffix(c),corrected(c),render,c);
    add('corrected-mask','corrected-mask-'+c.resolution,'Corrected ↔ training mask'+suffix(c),corrected(c),{kind:'mask',label:'Training mask',preview:c.mask},c,'Validity');
@@ -187,7 +192,7 @@ for(const [i,v] of data.views.entries()){
   for(const p of pairs){if(!groups.has(p.group)){const group=document.createElement('optgroup');group.label=p.group;groups.set(p.group,group);pairSelect.append(group)}const option=document.createElement('option');option.value=p.id;option.textContent=p.label;groups.get(p.group).append(option)}
   pair=pairs.find(p=>p.id===previous)||pairs.find(p=>p.family===allPair.value)||pairs[0];pairSelect.value=pair.id;
   metrics.replaceChildren();
-  for(const c of selected){const row=document.createElement('div');const scores=c.common_audits?c.common_audits.map(a=>`${a.resolution} common NCC ${number(a.before)} → ${number(a.after)} (${a.count} identical patches; ${a.invalid} unavailable)`).join(' · '):`reserved NCC ${number(c.audit_before)} → ${number(c.audit_after)} (${c.audit_count} scored; ${c.audit_invalid} unavailable)`;row.textContent=`${sizeLabel(c.resolution)} · usable ${(100*c.valid_fraction).toFixed(3)}% · source masks ${(100*c.source_mask_loss_fraction).toFixed(3)}% · ${scores} · native ${c.width} × ${c.height}`;if(c.status==='fallback'){row.className='error';row.textContent+=' · unchanged original: '+c.fallback_reason}metrics.append(row)}
+  for(const c of selected){const row=document.createElement('div');const scores=data.refine_cameras?`camera render NCC ${number(c.camera_audit_before)} → ${number(c.camera_audit_after)} · held-out weighted pose error ${number(c.pose_error_before,2)} → ${number(c.pose_error_after,2)} px${data.residual_warp?` · residual NCC ${number(c.audit_before)} → ${number(c.audit_after)}`:''}`:c.common_audits?c.common_audits.map(a=>`${a.resolution} common NCC ${number(a.before)} → ${number(a.after)} (${a.count} identical patches; ${a.invalid} unavailable)`).join(' · '):`reserved NCC ${number(c.audit_before)} → ${number(c.audit_after)} (${c.audit_count} scored; ${c.audit_invalid} unavailable)`;row.textContent=`${sizeLabel(c.resolution)} · usable ${(100*c.valid_fraction).toFixed(3)}% · source masks ${(100*c.source_mask_loss_fraction).toFixed(3)}% · ${scores} · native ${c.width} × ${c.height}`;if(c.status==='fallback'){row.className='error';row.textContent+=(data.residual_warp?' · residual warp rejected: ':' · unchanged original: ')+c.fallback_reason}metrics.append(row)}
   images();
  }
  const controller={refresh,setPair:family=>{pair=pairs.find(p=>p.family===family)||pairs[0];pairSelect.value=pair.id;images()},setMode:value=>{mode.value=value;display()},setBlend:value=>{range.value=value;display()}};

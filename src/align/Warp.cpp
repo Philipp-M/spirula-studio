@@ -26,7 +26,7 @@ void index_field(Field& f) {
     }
 }
 
-bool Field::source(float x,float y,float& sx,float& sy) const {
+bool Field::source(float x,float y,float& sx,float& sy,bool allow_outside) const {
     if(!std::isfinite(x)||!std::isfinite(y)||x<-.5f||y<-.5f||x>width-.5f||y>height-.5f||bins.empty())return false;
     const int bx=std::clamp((int)((x+.5f)/spacing),0,columns-1),by=std::clamp((int)((y+.5f)/spacing),0,rows-1);
     float nearest=1e31f;bool covered=false;
@@ -36,7 +36,7 @@ bool Field::source(float x,float y,float& sx,float& sy) const {
         const float z=detail::triangle_depth(t,b);if(covered&&z>=nearest)continue;
         nearest=z;sx=sy=0;for(int i=0;i<3;++i){sx+=b[i]*t.source[i][0];sy+=b[i]*t.source[i][1];}covered=true;
     }
-    return covered&&sx>=-.501f&&sy>=-.501f&&sx<=width-.499f&&sy<=height-.499f;
+    return covered&&(allow_outside||(sx>=-.501f&&sy>=-.501f&&sx<=width-.499f&&sy<=height-.499f));
 }
 
 void resample(const std::vector<uint8_t>& original,int w,int h,const std::vector<uint8_t>& original_mask,

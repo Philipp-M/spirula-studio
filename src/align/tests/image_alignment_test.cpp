@@ -100,6 +100,13 @@ int main() {
         A::resample(original,w,h,{},shifted,corrected,valid,&coverage);
         for(int y=0;y<h;++y)for(int x=5;x<w-5;++x)check(valid[(size_t)y*w+x],"smooth translation created an interior hole");
         check(coverage.pixels-coverage.covered==(size_t)h*3,"translation coverage differs from its warped footprint");
+        auto inverse=shifted;
+        for(auto& t:inverse.triangles)std::swap(t.source,t.target);
+        A::index_field(inverse);
+        check(inverse.source(50,80,sx,sy,true)&&std::abs(sx-53)<.01f&&std::abs(sy-80)<.01f,
+              "observation transport inverted the image correction");
+        check(!inverse.source(w-1,80,sx,sy)&&inverse.source(w-1,80,sx,sy,true)&&sx>w-1,
+              "observation transport lost coordinates outside the output crop");
         auto smooth=identity;
         auto movement=[&](float x,float y){return 2*std::sin(3.14159265f*x/(w-1))*std::sin(3.14159265f*y/(h-1));};
         for(int y=0;y<h;++y)for(int x=0;x<w;++x) {

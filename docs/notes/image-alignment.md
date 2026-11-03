@@ -63,8 +63,72 @@ can read compatible renders and matches directly from an existing alignment
 folder without copying those caches into the output.
 
 Add `--keep-alignment-data` to retain the review, diagnostics and reusable
-caches, including diagnostic JSON files. Camera metadata and point clouds are
-never exported. `--resume` and `--render-only` require this option.
+caches, including diagnostic JSON files. Image-warp mode exports no camera
+metadata or point clouds. `--resume` and `--render-only` require this option.
+
+## Camera refinement in the fixed world frame
+
+When the misalignment is a camera-pose error, refine the alignment before
+considering image deformation:
+
+```sh
+spirula align-images --data DATASET --reference MODEL.ply --output ALIGNED \
+  --refine-cameras --max-resolution 2560 --all
+```
+
+This mode leaves photographs byte-identical and writes a new COLMAP model in
+`sparse/0`. Accepted camera poses change; point coordinates, observation tracks,
+intrinsics and the model's other metadata files, including georeferencing, are
+preserved. The splat itself is never transformed. In world-to-camera convention,
+the update is `R_new = delta_R * R_old`,
+`t_new = delta_R * t_old + delta_t`; the world's origin, axes and scale stay fixed.
+
+Reliable render-to-photo matches are lifted into 3D using rendered ray depth and
+the existing calibration. A robust six-parameter refinement reuses the native
+SfM optimizer. Samples need bidirectional overlap, round-trip consistency,
+opaque rendered support and locally consistent depth. Depth ranges receive
+balanced weights so distant background does not dominate nearby structures.
+Reserved correspondences must improve by 10% before a correction is accepted.
+The reported pose errors are depth-balanced means with errors clipped at 20
+working pixels, not median errors or ground-truth accuracy.
+
+The accepted pose is re-rendered and matched again against the untouched photo.
+The review offers initial/refined renders and before/after correspondence-error
+maps. Original camera files remain untouched. Only selected images are copied;
+unselected camera records remain in the copied model, so a sampled run is a
+review subset rather than a complete replacement image tree.
+
+Camera refinement currently requires COLMAP without rig frames and a fresh,
+complete run (no `--resume` or `--render-only`). It retains review data and runs
+serially so rendering and matching do not compete for the GPU. Source filenames
+and encodings are preserved; image-encoding options do not recompress them.
+For small remaining image errors, a separate image-warp run can use this refined
+dataset and keep its camera poses fixed.
+
+To apply both stages in one run:
+
+```sh
+spirula align-images --data DATASET --reference MODEL.ply --output CORRECTED \
+  --refine-cameras --residual-warp --max-resolution 2560 --all
+```
+
+The residual fit uses fresh matches against the accepted camera's render. A
+rejected pose retains the original camera and still permits residual correction.
+The residual stage has its own reserved-patch acceptance check; rejecting it
+does not undo an accepted pose. Only the final residual field resamples the
+original photograph, once, at native resolution. Output encoding follows
+`--image-format` and `--jpeg-quality`; original native photos are retained in the
+review. Before/after error maps in this mode evaluate the residual stage against
+the accepted pose, and the initial render remains available separately.
+
+The exported COLMAP model uses the output filenames and transports selected
+2D observation coordinates through the same mesh, including the half-pixel
+conversion between COLMAP's corner convention and the image field's integer
+pixel centers. Observation indices and 3D track associations remain intact.
+Intrinsics, 3D points and georeferencing remain unchanged. Stored sparse-point
+reprojection-error summaries describe the input reconstruction; they are not
+recomputed by this preprocessing command. This output is not a new bundle
+adjustment or an independent validation of the sparse geometry.
 
 ## Output encoding
 
@@ -97,25 +161,42 @@ RoMa supplies both correspondence directions, overlap and precision. Confidence,
 round-trip consistency, predicted precision and local ZNCC affect anchor weights.
 They never directly determine output validity. Small grayscale patches refine
 matches to subpixel coordinates. A robust affine movement estimate supplies a
-complete baseline; coarse-to-fine, robust grid regularization fits local motion.
+complete baseline. A robust data fit penalizes residual motion and bending on
+the grid. Large correspondence residuals lose weight rather than weakening
+smoothness wherever fitted motions disagree. Coherent grayscale gradients in
+the source photograph strengthen bending constraints along their tangent,
+over spans of 2, 4, 8 and 16 grid intervals. Long constraints require continuous
+edge evidence across the span; incoherent texture and corners weaken this
+constraint. These are soft constraints, not a guarantee of exact straightness.
 Weakly matched areas inherit movement instead of becoming unsupported holes.
 `--min-overlap` and `--min-correlation` control soft weighting, `--max-cycle`
 controls cycle weighting, and `--max-displacement` excludes implausible anchors.
+Its default, `0`, resolves to 5% of the working image diagonal. A positive value
+is an explicit limit in working pixels. The automatic limit scales with
+resolution so that increasing matching resolution does not reject the same
+physical movement. Resume of a run made with the old explicit 40-pixel default
+requires `--max-displacement 40`.
 
-Reference depth is sampled at matched reference coordinates, not at unwarped
-photo coordinates. Depth influences neighbouring motion softly. Surface cuts
-require a substantial depth jump and different fitted motion with nearby anchor
-support; uncertain geometry alone does not split the source. Cuts are
+Reference depth and round-trip consistency are evaluated again after patch
+refinement, at the final matched coordinates. Depth influences neighbouring
+motion softly only when at least three other nearby anchors support each
+sample's depth. Surface cuts require this support on both sides, a substantial
+depth jump and different fitted motion; an isolated depth outlier cannot borrow
+confidence from unrelated neighbouring surfaces to split the source. Cuts are
 conservative estimates, not verified physical boundaries. A single visible-depth
 map cannot recover all hidden layers or repair incorrect reference geometry.
 
 A source-image triangle mesh covers the entire source pixel domain. Supported
 surface boundaries duplicate mesh vertices rather than discarding source area.
 Overlapping warped triangles are resolved by depth. Deformation limits reduce
-correction locally and refit the mesh; they do not mask problematic triangles.
-A photometric line search selects correction strength on fitting patches, keeping
+local residuals toward a conservative affine transform of each surface; they
+do not pull an aligned surface back toward zero movement or mask problematic
+triangles. A photometric line search selects residual strength relative to those
+surface transforms on fitting patches, keeping
 reserved audit patches separate. Insufficient matching or unresolved deformation
 yields an unchanged fallback.
+The reported `correction_scale` is the minimum residual retention, not a scale
+on the complete camera or surface movement.
 
 The same triangles determine source coordinates and coverage. Final validity is
 exactly **warped source coverage intersected with the transported original mask
@@ -154,6 +235,11 @@ Review files below require `--keep-alignment-data`.
   A rejected candidate is retained separately when quality checks cause fallback.
 - `warp.bin`: versioned source mesh and field data; its spatial index is rebuilt
   on loading. Version 1 confidence-masked fields are incompatible.
+- `alignment-error-before.png` / `alignment-error-after.png`: discrepancy from
+  bidirectionally consistent RoMa correspondences on the same working-pixel
+  scale (green 0, red 10 or more). Gray is unverified matching and magenta is
+  missing warped coverage. These measure agreement with the matcher, not ground
+  truth. Use them alongside render overlays and actual photographic edges.
 
 Use Spirula's **Ignore distractors** mask mode, or the training CLI's
 `--apply-loss-for-mask false`. Disable source depth/normal supervision when
@@ -182,12 +268,69 @@ always start from untouched source photographs.
 motion, known occlusion gaps, zero false holes with missing confidence/depth or
 textureless images, source-mask transport without erosion, exact sharp identity
 sampling at noninteger native scaling, translation footprint, field and prediction
-persistence, scoring and output/symlink protection. `image_alignment_dataset_test`
+persistence, scoring and output/symlink protection.
+`image_alignment_structure_test` checks straight vertical and diagonal beams
+under cycle-consistent correspondence noise at several wavelengths, including
+isolated depth outliers, retained translation and interior coverage.
+It also checks correction of synthetic radial distortion, requiring subpixel
+mean edge error and at least 80% reduction of the original edge displacement.
+`image_alignment_pose_test` checks a calibrated two-depth scene with large
+foreground parallax, independent background motion and held-out pose residuals.
+`image_alignment_dataset_test`
 checks exported native dimensions against original photographs, masks, coverage
 accounting, safe paths and the absence of copied camera metadata or point clouds.
 
 The core is portable C++ with no new device kernels. Inference requires
 `SS_BUILD_SAM=ON`, independently of the trainer backend.
+
+## Registration research
+
+- [GS-CPR](https://arxiv.org/abs/2408.11085) establishes 2D matches against
+  splat renders, lifts them with rendered depth, then estimates camera pose.
+- [iComMa](https://arxiv.org/abs/2312.09031) combines matching and rendered-image
+  comparison for pose estimation; their capture ranges and precision differ.
+- [UGS-Loc](https://arxiv.org/abs/2603.16538) models pose and geometric
+  uncertainty. Plausible splat appearance does not make every depth trustworthy.
+- [RoMa v2](https://arxiv.org/abs/2511.15706) separates coarse matching from
+  high-resolution refinement and predicts directional covariance for estimation.
+- [MoGe-2](https://arxiv.org/abs/2507.02546) predicts detailed monocular geometry
+  and metric scale. Such predictions could supply an additional boundary or
+  depth-consistency cue, but would need validation in the splat's coordinate
+  frame; the alignment command does not currently run an extra depth model.
+- [Self-Calibrating Gaussian Splatting](https://arxiv.org/abs/2502.09563)
+  jointly optimizes lens distortion, camera parameters and splats. Its hybrid
+  invertible neural/grid field regularizes a flexible distortion model. This
+  supports using a smooth residual field, but is a joint reconstruction method,
+  not evidence that independent per-image warps estimate physical lens parameters.
+- [Geometric Structure Preserving Warp](https://openaccess.thecvf.com/content/CVPR2022/html/Du_Geometric_Structure_Preserving_Warp_for_Natural_Image_Stitching_CVPR_2022_paper.html)
+  adds geometric structure constraints to local alignment. The alignment mesh
+  here uses photographic ridge tangents and bending penalties rather than that
+  paper's full stitching formulation.
+- [COLMAP camera models](https://colmap.github.io/cameras.html) distinguish
+  pinhole cameras, which assume prior undistortion, from radial and tangential
+  lens models. [Shared intrinsics](https://colmap.github.io/faq.html#share-intrinsics)
+  allow photographs from the same camera to constrain a common calibration.
+
+Pose and residual image correction solve different parts of the mismatch. The
+residual field may absorb remaining lens distortion, rolling-shutter effects or
+reference-geometry errors; matching one image to a splat cannot identify their
+causes. A physical lens-calibration extension should fit a shared model across
+views with the same optics, validate on held-out views, and retain local image
+corrections only where that model is insufficient. This command does not change
+the shared intrinsic calibration or claim to recover a calibrated lens model.
+
+World-frame preservation is not sparse-reprojection preservation. A pose that
+agrees better with the reference splat can disagree substantially with the
+original SfM points if the two representations differ locally. Evaluate both
+render agreement and reprojection against the original sparse observations.
+Transporting observations through a residual warp preserves their pixel
+locations in the delivered images; it cannot reconcile inconsistent 3D geometry.
+That requires reference-aware multiview refinement, with the world frame anchored
+and validation on additional photographs, rather than moving the global splat
+or silently treating its rendered depth as ground truth.
+
+The camera refinement here uses local depth checks and robust refinement. It does not
+implement UGS-Loc's Fisher-information fields or Monte Carlo pose sampling.
 
 The manifest stores `max_resolution: 0` for uncapped runs; the viewer labels
 these runs **Native**. Resume requires the same resolution policy as the original

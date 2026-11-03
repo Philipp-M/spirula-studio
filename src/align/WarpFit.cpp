@@ -29,7 +29,7 @@ MatchDiagnostics diagnose(const Image& photo,const Image& render,const std::vect
         const float cycle=reverse?std::hypot(bx-x,by-y):1e6f;if(reverse)cycles.push_back(cycle);
         const bool overlap=c>=s.min_overlap&&reverse&&bc>=s.min_overlap;
         const bool consistent=overlap&&cycle<=s.max_cycle;
-        const bool bounded=consistent&&std::hypot(qx-x,qy-y)<=s.max_displacement;
+        const bool bounded=consistent&&std::hypot(qx-x,qy-y)<=detail::displacement_limit(s,w,h);
         d.overlap+=overlap;d.cycle+=consistent;d.bounded+=bounded;
         if(!bounded||opacity[(size_t)y*w+x]<.95f)continue;
         ++d.old_opacity;bool interior=true;
@@ -46,27 +46,44 @@ MatchDiagnostics diagnose(const Image& photo,const Image& render,const std::vect
     d.median_cycle=median(cycles);d.median_displacement=median(movement);return d;
 }
 
-std::vector<Vec> broad_field(const std::vector<Vec>& data,const std::vector<float>& weight,int columns,int rows) {
+std::vector<Vec> broad_field(const std::vector<Vec>& data,const std::vector<float>& weight,const Field& f,
+                             const std::vector<uint32_t>& labels={}) {
+    using Matrix=std::array<std::array<double,5>,3>;
     std::vector<Vec> out(data.size());std::vector<float> robust=weight;
-    double coefficients[2][3]{};
+    std::vector<Matrix> matrices(labels.empty()?1:data.size());
+    auto coordinates=[&](int x,int y){return std::array<double,3>{1,2.0*std::min(x*f.spacing,f.width)/f.width-1,2.0*std::min(y*f.spacing,f.height)/f.height-1};};
     for(int iteration=0;iteration<6;++iteration) {
-        double matrix[3][5]{};
-        for(int y=0;y<rows;++y)for(int x=0;x<columns;++x) {
-            const size_t k=(size_t)y*columns+x;const double a[3]={1,2.0*x/(columns-1)-1,2.0*y/(rows-1)-1};
+        std::fill(matrices.begin(),matrices.end(),Matrix{});
+        for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x) {
+            const size_t k=(size_t)y*f.columns+x;const auto a=coordinates(x,y);
+            auto& matrix=matrices[labels.empty()?0:labels[k]];
             for(int i=0;i<3;++i){for(int j=0;j<3;++j)matrix[i][j]+=robust[k]*a[i]*a[j];
                 for(int c=0;c<2;++c)matrix[i][3+c]+=robust[k]*a[i]*data[k][c];}
         }
-        for(int i=0;i<3;++i)matrix[i][i]+=.01;
-        for(int i=0;i<3;++i) {
-            int pivot=i;for(int j=i+1;j<3;++j)if(std::abs(matrix[j][i])>std::abs(matrix[pivot][i]))pivot=j;
-            for(int j=0;j<5;++j)std::swap(matrix[i][j],matrix[pivot][j]);
-            const double v=matrix[i][i];for(int j=i;j<5;++j)matrix[i][j]/=v;
-            for(int k=0;k<3;++k)if(k!=i){const double t=matrix[k][i];for(int j=i;j<5;++j)matrix[k][j]-=t*matrix[i][j];}
+        for(auto& matrix:matrices) {
+            if(matrix[0][0]==0)continue;
+            const double cx=matrix[0][1]/matrix[0][0],cy=matrix[0][2]/matrix[0][0];
+            for(int i=0;i<3;++i)matrix[i][i]+=.01;
+            for(int i=0;i<3;++i) {
+                int pivot=i;for(int j=i+1;j<3;++j)if(std::abs(matrix[j][i])>std::abs(matrix[pivot][i]))pivot=j;
+                std::swap(matrix[i],matrix[pivot]);
+                const double v=matrix[i][i];for(int j=i;j<5;++j)matrix[i][j]/=v;
+                for(int k=0;k<3;++k)if(k!=i){const double t=matrix[k][i];for(int j=i;j<5;++j)matrix[k][j]-=t*matrix[i][j];}
+            }
+            if(!labels.empty()) {
+                double gradient=0;
+                for(int c=0;c<2;++c)gradient+=std::pow(2*matrix[1][3+c]/f.width,2)+std::pow(2*matrix[2][3+c]/f.height,2);
+                const double scale=std::min(1.0,.1/std::max(1e-12,std::sqrt(gradient)));
+                for(int c=0;c<2;++c) {
+                    matrix[0][3+c]+=(1-scale)*(cx*matrix[1][3+c]+cy*matrix[2][3+c]);
+                    matrix[1][3+c]*=scale;matrix[2][3+c]*=scale;
+                }
+            }
         }
-        for(int c=0;c<2;++c)for(int i=0;i<3;++i)coefficients[c][i]=matrix[i][3+c];
-        for(int y=0;y<rows;++y)for(int x=0;x<columns;++x) {
-            const size_t k=(size_t)y*columns+x;
-            for(int c=0;c<2;++c)out[k][c]=(float)(coefficients[c][0]+coefficients[c][1]*(2.0*x/(columns-1)-1)+coefficients[c][2]*(2.0*y/(rows-1)-1));
+        for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x) {
+            const size_t k=(size_t)y*f.columns+x;const auto a=coordinates(x,y);
+            const auto& matrix=matrices[labels.empty()?0:labels[k]];
+            for(int c=0;c<2;++c)out[k][c]=(float)(matrix[0][3+c]+matrix[1][3+c]*a[1]+matrix[2][3+c]*a[2]);
             const float residual=std::hypot(out[k][0]-data[k][0],out[k][1]-data[k][1]);
             robust[k]=weight[k]*std::min(1.0f,3/std::max(.01f,residual));
         }
@@ -74,12 +91,8 @@ std::vector<Vec> broad_field(const std::vector<Vec>& data,const std::vector<floa
     return out;
 }
 
-std::vector<uint32_t> surfaces(const Field& f,const std::vector<float>& weights) {
+std::vector<uint32_t> surfaces(const Field& f,const std::vector<float>& support) {
     std::vector<uint32_t> parent(f.displacement.size());std::iota(parent.begin(),parent.end(),0);
-    std::vector<float> support(weights.size());
-    for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x)
-        for(int j=std::max(0,y-2);j<=std::min(f.rows-1,y+2);++j)for(int i=std::max(0,x-2);i<=std::min(f.columns-1,x+2);++i)
-            support[(size_t)y*f.columns+x]=std::max(support[(size_t)y*f.columns+x],weights[(size_t)j*f.columns+i]);
     auto root=[&](uint32_t k){while(parent[k]!=k){parent[k]=parent[parent[k]];k=parent[k];}return k;};
     for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x) {
         const size_t k=(size_t)y*f.columns+x;
@@ -92,7 +105,8 @@ std::vector<uint32_t> surfaces(const Field& f,const std::vector<float>& weights)
             if(!cut)parent[root((uint32_t)k)]=root((uint32_t)j);
         }
     }
-    for(auto& k:parent)k=root(k);return parent;
+    for(auto& k:parent)k=root(k);
+    return parent;
 }
 
 void mesh(Field& f,const std::vector<uint32_t>& labels) {
@@ -156,13 +170,17 @@ double photometric_score(const Field& f,const std::vector<float>& photo,const st
 }
 
 void choose_strength(Field& f,const std::vector<float>& photo,const std::vector<float>& render,
-                     const std::vector<uint8_t>& source_mask) {
-    const auto triangles=f.triangles;index_field(f);
+                     const std::vector<uint8_t>& source_mask,const std::vector<Vec>& base,
+                     const std::vector<uint32_t>& labels) {
+    const auto triangles=f.triangles;const auto displacement=f.displacement;
+    f.displacement=base;mesh(f,labels);const auto baseline=f.triangles;
+    f.displacement=displacement;f.triangles=triangles;index_field(f);
     double best=photometric_score(f,photo,render,source_mask);float scale=1;
-    for(float candidate:{.25f,.5f,.75f}) {
+    for(float candidate:{0.0f,.25f,.5f,.75f}) {
         f.triangles=triangles;bool safe=true;
-        for(auto& t:f.triangles) {
-            for(int i=0;i<3;++i)for(int c=0;c<2;++c)t.target[i][c]=t.source[i][c]+candidate*(t.target[i][c]-t.source[i][c]);
+        for(size_t k=0;k<f.triangles.size();++k) {
+            auto& t=f.triangles[k];
+            for(int i=0;i<3;++i)for(int c=0;c<2;++c)t.target[i][c]=baseline[k].target[i][c]+candidate*(t.target[i][c]-baseline[k].target[i][c]);
             if(cross(t.target[0],t.target[1],t.target[2])<.25f*cross(t.source[0],t.source[1],t.source[2]))safe=false;
         }
         if(!safe)continue;
@@ -170,8 +188,9 @@ void choose_strength(Field& f,const std::vector<float>& photo,const std::vector<
         if(score>best+.0005){best=score;scale=candidate;}
     }
     f.triangles=triangles;
-    for(auto& t:f.triangles)for(int i=0;i<3;++i)for(int c=0;c<2;++c)t.target[i][c]=t.source[i][c]+scale*(t.target[i][c]-t.source[i][c]);
-    for(auto& d:f.displacement)for(float& v:d)v*=scale;
+    for(size_t k=0;k<f.triangles.size();++k)for(int i=0;i<3;++i)for(int c=0;c<2;++c)
+        f.triangles[k].target[i][c]=baseline[k].target[i][c]+scale*(f.triangles[k].target[i][c]-baseline[k].target[i][c]);
+    for(size_t k=0;k<f.displacement.size();++k)for(int c=0;c<2;++c)f.displacement[k][c]=base[k][c]+scale*(displacement[k][c]-base[k][c]);
     f.correction_scale*=scale;
 }
 }  // namespace
@@ -181,10 +200,11 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     const int w=render.width,h=render.height;
     if(w<16||h<16||photo.width!=w||photo.height!=h||depth.size()!=(size_t)w*h||opacity.size()!=depth.size()||
        photo.rgb.size()!=depth.size()*3||render.rgb.size()!=photo.rgb.size()||s.spacing<4||s.patch_radius<1||
-       s.refine_radius<0||!(s.min_overlap>0&&s.min_overlap<=1)||!(s.min_correlation>0&&s.min_correlation<=1)||!(s.depth_jump>0)||!(s.max_cycle>0)||!(s.max_displacement>0)||matches.backward.warp.empty()||
+       s.refine_radius<0||!(s.min_overlap>0&&s.min_overlap<=1)||!(s.min_correlation>0&&s.min_correlation<=1)||!(s.depth_jump>0)||!(s.max_cycle>0)||!std::isfinite(s.max_displacement)||s.max_displacement<0||matches.backward.warp.empty()||
        (!source_mask.empty()&&source_mask.size()!=(size_t)w*h))
         throw std::runtime_error("invalid image-alignment inputs");
     Field f;f.width=w;f.height=h;f.spacing=s.spacing;f.depth_jump=s.depth_jump;
+    const float max_displacement=detail::displacement_limit(s,w,h);
     f.columns=(w+s.spacing-1)/s.spacing+1;f.rows=(h+s.spacing-1)/s.spacing+1;
     const size_t n=(size_t)f.columns*f.rows;f.displacement.resize(n);f.depth.resize(n);f.support.resize(n);
     f.diagnostics=diagnose(photo,render,depth,opacity,matches,s);
@@ -209,10 +229,9 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
         const float x=std::clamp(std::min(gx*s.spacing,w)-.5f,0.0f,(float)w-1),y=std::clamp(std::min(gy*s.spacing,h)-.5f,0.0f,(float)h-1);
         if(!source_mask.empty()&&!source_mask[(size_t)std::lround(y)*w+(int)std::lround(x)])continue;
         float qx,qy,c,bx,by,bc;
-        if(!detail::match(matches.backward,x,y,w,h,qx,qy,c)||std::hypot(qx-x,qy-y)>s.max_displacement||
+        if(!detail::match(matches.backward,x,y,w,h,qx,qy,c)||std::hypot(qx-x,qy-y)>max_displacement||
            !detail::match(matches.forward,qx,qy,w,h,bx,by,bc))continue;
         const float cycle=std::hypot(bx-x,by-y);
-        float z=0;if(detail::sample(depth,w,h,1,qx,qy,&z)&&std::isfinite(z)&&z>0)f.depth[k]=z;
         const float overlap=std::clamp(c*bc,0.0f,1.0f);
         float weight=overlap/(1+std::exp(12*(s.min_overlap-std::min(c,bc))))*precision[k]/(1+std::pow(cycle/s.max_cycle,4.0f));
         if(weight<1e-5f)continue;
@@ -226,42 +245,26 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
             auto offset=[&](float a,float b){const float den=a-2*best+b;return den<-.00001f?std::clamp(.5f*(a-b)/den,-.5f,.5f):0.0f;};
             qx+=offset(detail::correlation(pg,rg,w,h,x,y,qx-1,qy,s.patch_radius),detail::correlation(pg,rg,w,h,x,y,qx+1,qy,s.patch_radius));
             qy+=offset(detail::correlation(pg,rg,w,h,x,y,qx,qy-1,s.patch_radius),detail::correlation(pg,rg,w,h,x,y,qx,qy+1,s.patch_radius));
-            const float texture=std::clamp(best/s.min_correlation,0.0f,1.0f);weight*=.25f+.75f*texture*texture;
         }
-        if(std::hypot(qx-x,qy-y)>s.max_displacement)continue;
+        if(std::hypot(qx-x,qy-y)>max_displacement)continue;
+        if(!detail::match(matches.forward,qx,qy,w,h,bx,by,bc))continue;
+        const float refined_cycle=std::hypot(bx-x,by-y);
+        weight=std::clamp(c*bc,0.0f,1.0f)/(1+std::exp(12*(s.min_overlap-std::min(c,bc))))*precision[k]/(1+std::pow(refined_cycle/s.max_cycle,4.0f));
+        const float refined=detail::correlation(pg,rg,w,h,x,y,qx,qy,s.patch_radius);
+        if(refined>-1){const float texture=std::clamp(refined/s.min_correlation,0.0f,1.0f);weight*=.25f+.75f*texture*texture;}
+        float z=0;if(detail::sample(depth,w,h,1,qx,qy,&z)&&std::isfinite(z)&&z>0)f.depth[k]=z;
         if(gx%5==2&&gy%5==2)continue;
         weights[k]=weight;data[k]={qx-x,qy-y};f.support[k]=weight;
     }
     for(float weight:weights)f.anchors+=weight>.05f;
     f.fallback=f.anchors<12;
-    const auto broad=broad_field(data,weights,f.columns,f.rows);f.displacement=broad;
-    auto next=f.displacement;
-    for(int step:{8,4,2,1})for(int iteration=0;iteration<80;++iteration) {
-#pragma omp parallel for schedule(static)
-        for(int gy=0;gy<f.rows;++gy)for(int gx=0;gx<f.columns;++gx) {
-            const size_t k=(size_t)gy*f.columns+gx;float total=.003f,dx=.003f*broad[k][0],dy=.003f*broad[k][1];
-            for(int j=std::max(0,gy-step/2);j<=std::min(f.rows-1,gy+step/2);++j)
-                for(int i=std::max(0,gx-step/2);i<=std::min(f.columns-1,gx+step/2);++i) {
-                    const size_t q=(size_t)j*f.columns+i;float v=weights[q]/(step*step);
-                    if(f.depth[k]>0&&f.depth[q]>0) {
-                        const float dz=std::abs(std::log(f.depth[k]/f.depth[q]));v/=1+std::pow(dz/.08f,4.0f);
-                    }
-                    total+=v;dx+=v*data[q][0];dy+=v*data[q][1];
-                }
-            for(const auto d:{std::array<int,2>{-step,0},{step,0},{0,-step},{0,step}}) {
-                const int x=gx+d[0],y=gy+d[1];if(x<0||y<0||x>=f.columns||y>=f.rows)continue;
-                const size_t q=(size_t)y*f.columns+x;
-                float v=.35f;
-                if(f.depth[k]>0&&f.depth[q]>0){const float dz=std::abs(std::log(f.depth[k]/f.depth[q]));v*=.02f+.98f/(1+std::pow(dz/.08f,4.0f));}
-                const float delta=std::hypot(f.displacement[k][0]-f.displacement[q][0],f.displacement[k][1]-f.displacement[q][1]);
-                v*=std::min(1.0f,.75f/std::max(.001f,delta));total+=v;
-                dx+=v*f.displacement[q][0];dy+=v*f.displacement[q][1];
-            }
-            next[k]={dx/total,dy/total};
-        }
-        f.displacement.swap(next);
-    }
-    auto labels=surfaces(f,weights);const auto fitted=f.displacement;std::vector<float> strength(n,1);
+    const auto broad=broad_field(data,weights,f);f.displacement=broad;
+    const auto support=detail::depth_support(f,weights);
+    detail::regularize(f,data,weights,support,pg,source_mask);
+    auto labels=surfaces(f,support);
+    const auto fitted=f.displacement;std::vector<float> strength(n,1);
+    auto safety_weights=weights;for(float& v:safety_weights)v+=.001f;
+    const auto safe_base=broad_field(fitted,safety_weights,f,labels);
     for(int attempt=0;attempt<32;++attempt) {
         mesh(f,labels);bool safe=true;
         for(const auto& t:f.triangles) {
@@ -278,7 +281,10 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
             for(const auto& point:t.source) {
                 const int gx=std::clamp((int)((point[0]+.5f)/f.spacing),0,f.columns-2),gy=std::clamp((int)((point[1]+.5f)/f.spacing),0,f.rows-2);
                 for(int y=gy;y<=gy+1;++y)for(int x=gx;x<=gx+1;++x) {
-                    const size_t k=(size_t)y*f.columns+x;strength[k]=std::min(strength[k],.75f*std::max(.01f,std::hypot(f.displacement[k][0],f.displacement[k][1])/std::max(.001f,std::hypot(fitted[k][0],fitted[k][1]))));
+                    const size_t k=(size_t)y*f.columns+x;
+                    const float current=std::hypot(f.displacement[k][0]-safe_base[k][0],f.displacement[k][1]-safe_base[k][1]);
+                    const float original=std::hypot(fitted[k][0]-safe_base[k][0],fitted[k][1]-safe_base[k][1]);
+                    strength[k]=std::min(strength[k],.75f*current/std::max(.001f,original));
                 }
             }
         }
@@ -287,16 +293,16 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
         for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x) {
             const size_t k=(size_t)y*f.columns+x;
             for(int q:{x?(int)k-1:-1,x+1<f.columns?(int)k+1:-1,y?(int)k-f.columns:-1,y+1<f.rows?(int)k+f.columns:-1})
-                if(q>=0)smooth[k]=std::min(smooth[k],.5f+.5f*strength[q]);
+                if(q>=0&&labels[q]==labels[k])smooth[k]=std::min(smooth[k],.5f+.5f*strength[q]);
         }
         strength.swap(smooth);f.correction_scale=*std::min_element(strength.begin(),strength.end());
-        for(size_t k=0;k<n;++k)for(int c=0;c<2;++c)f.displacement[k][c]=fitted[k][c]*strength[k];
+        for(size_t k=0;k<n;++k)for(int c=0;c<2;++c)f.displacement[k][c]=safe_base[k][c]+(fitted[k][c]-safe_base[k][c])*strength[k];
         if(attempt==31)f.fallback=true;
     }
     if(f.fallback) {
         f.correction_scale=0;std::fill(f.displacement.begin(),f.displacement.end(),Vec{});std::fill(labels.begin(),labels.end(),0);mesh(f,labels);
     }
-    if(!f.fallback)choose_strength(f,pg,rg,source_mask);
+    if(!f.fallback)choose_strength(f,pg,rg,source_mask,safe_base,labels);
     index_field(f);f.valid.resize((size_t)w*h);
 #pragma omp parallel for schedule(static)
     for(int y=0;y<h;++y)for(int x=0;x<w;++x){float sx,sy;f.valid[(size_t)y*w+x]=f.source(x,y,sx,sy)?255:0;}

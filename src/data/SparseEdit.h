@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,12 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
                                            const SparseKeep& keep,
                                            const Sim3* moved = nullptr,
                                            SparseBaseline* base = nullptr);
+
+// Observation indices and 3D tracks stay fixed when pixel coordinates change.
+using SparseObservationTransform = std::function<void(int32_t,double&,double&)>;
+void sparse_write_camera_copy(const std::string& dataset_dir, const std::string& out_dir,
+                              const std::map<int32_t,ColmapImage>& poses,
+                              const SparseObservationTransform& transform = {});
 
 // What a COLMAP model knows about its own quality and the parser does not
 // keep: who saw each point, and how well. Points are in the file's order --

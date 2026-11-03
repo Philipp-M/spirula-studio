@@ -173,11 +173,7 @@ ColmapPoints3D read_points3D_binary(const std::string& recon_dir) {
 
 
 // ===========================================================================
-// Text-format readers (cameras.txt / images.txt / points3D.txt), port of
-// colmap_utils.py read_*_text. '#' lines are comments; fields are
-// whitespace-separated (image names therefore contain no spaces, matching
-// COLMAP's own text reader); each image record is followed by one raw
-// POINTS2D line (possibly empty) which is skipped.
+// Text-format readers
 // ===========================================================================
 
 namespace {
@@ -264,8 +260,8 @@ std::map<int32_t, ColmapImage> read_images_text(const std::string& recon_dir) {
         im.camera_id = (int32_t)fast_strtol(p, &p);
         while (p < e && std::isspace((unsigned char)*p)) p++;
         const char* n0 = p;
-        while (p < e && !std::isspace((unsigned char)*p)) p++;
-        im.name.assign(n0, (size_t)(p - n0));
+        while (e > n0 && std::isspace((unsigned char)e[-1])) --e;
+        im.name.assign(n0, (size_t)(e - n0));
         if (im.name.empty())
             throw std::runtime_error("ColmapParser: malformed images.txt line");
         r.skip_raw_line();                   // POINTS2D[] line (may be empty)

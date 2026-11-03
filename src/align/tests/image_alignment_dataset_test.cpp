@@ -2,10 +2,12 @@
 #include "data/Json.h"
 #include "external/stb_image.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 
@@ -15,9 +17,15 @@ int main(int argc,char** argv) {
         namespace fs=std::filesystem;
         const auto root=fs::canonical(argv[1]);const size_t expected=std::stoull(argv[2]);
         const auto manifest=json_parse_file((root/"manifest.json").string());
-        const bool jpeg=manifest.find("image_format")&&manifest.find("image_format")->as_string()=="jpeg";
+        const bool cameras=manifest.find("refine_cameras")&&manifest.find("refine_cameras")->as_bool();
+        const bool residual=manifest.find("residual_warp")&&manifest.find("residual_warp")->as_bool();
+        const bool source_format=manifest.find("image_format")&&manifest.find("image_format")->as_string()=="source";
+        const bool jpeg_format=manifest.find("image_format")&&manifest.find("image_format")->as_string()=="jpeg";
         const auto* views=manifest.find("views");
         if(!views||views->arr.size()!=expected)throw std::runtime_error("selected report count differs");
+        if(cameras&&!fs::is_directory(root/"sparse/0"))throw std::runtime_error("camera-refinement output is missing its COLMAP model");
+        if(!cameras&&fs::exists(root/"sparse"))throw std::runtime_error("image-only correction copied a sparse model");
+        if(residual&&source_format)throw std::runtime_error("residual correction was reported as unchanged source encoding");
         for(const char* name:{"transforms.json","training-options.json","seed.ply"})
             if(fs::exists(root/name))throw std::runtime_error("export copied camera metadata or a point cloud");
         std::set<fs::path> images;
@@ -29,9 +37,15 @@ int main(int argc,char** argv) {
             unsigned char image_magic[2]{},mask_magic[2]{};
             std::ifstream(image,std::ios::binary).read((char*)image_magic,2);
             std::ifstream(mask,std::ios::binary).read((char*)mask_magic,2);
-            if(image.extension()!=(jpeg?".jpg":".png")||image_magic[0]!=(jpeg?0xff:0x89)||image_magic[1]!=(jpeg?0xd8:0x50)||
+            const bool jpeg=source_format?image_magic[0]==0xff:jpeg_format;
+            if((!source_format&&image.extension()!=(jpeg?".jpg":".png"))||image_magic[0]!=(jpeg?0xff:0x89)||image_magic[1]!=(jpeg?0xd8:0x50)||
                mask.extension()!=".png"||mask_magic[0]!=0x89||mask_magic[1]!=0x50)
                 throw std::runtime_error("export encoding differs from selected image format or lossless mask policy");
+            if(source_format) {
+                std::ifstream source(v.find("source")->as_string(),std::ios::binary),copy(image,std::ios::binary);
+                if(!std::equal(std::istreambuf_iterator<char>(source),std::istreambuf_iterator<char>(),std::istreambuf_iterator<char>(copy),std::istreambuf_iterator<char>()))
+                    throw std::runtime_error("camera refinement changed the original photograph");
+            }
             const auto ir=image.lexically_relative(root/"images"),mr=mask.lexically_relative(root/"masks");
             if(mr!=fs::path(ir.string()+".png"))throw std::runtime_error("mask filename differs from COLMAP's image-name-plus-PNG convention");
             if(ir.empty()||mr.empty()||ir.is_absolute()||mr.is_absolute()||*ir.begin()==".."||*mr.begin()==".."||!images.insert(image).second)
@@ -55,7 +69,8 @@ int main(int argc,char** argv) {
                 throw std::runtime_error("excluded pixels are not explained by warp coverage and source masks");
             if(status=="fallback"&&v.find("fallback_reason")->as_string().empty())throw std::runtime_error("unchanged fallback was not explained");
         }
-        std::cout<<"PASS: complete sample, native image/mask dimensions, binary coverage, safe output paths, no copied cameras or point cloud\n";
+        std::cout<<"PASS: complete sample, native image/mask dimensions, binary coverage and safe output paths";
+        std::cout<<(source_format?", byte-identical source photographs\n":cameras?", camera model exported\n":", no copied cameras or point cloud\n");
         return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

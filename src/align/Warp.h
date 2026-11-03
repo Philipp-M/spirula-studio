@@ -1,6 +1,8 @@
 #pragma once
 
 #include "roma/Roma.h"
+#include "data/CameraMath.h"
+#include "core/Similarity.h"
 
 #include <array>
 #include <cstdint>
@@ -16,7 +18,7 @@ struct Image {
 
 struct Settings {
     int spacing = 8, patch_radius = 3, refine_radius = 3;
-    float min_overlap = 0.7f, max_cycle = 1.5f, max_displacement = 40.0f;
+    float min_overlap = 0.7f, max_cycle = 1.5f, max_displacement = 0.0f;
     float min_correlation = 0.75f, depth_jump = 0.04f;
 };
 
@@ -29,6 +31,13 @@ struct MatchDiagnostics {
 struct Triangle {
     std::array<std::array<float, 2>, 3> source, target;
     std::array<float, 3> depth;
+};
+
+struct CameraAlignment {
+    Sim3 correction;
+    bool accepted = false;
+    size_t samples = 0, holdout = 0;
+    double error_before = 0, error_after = 0;
 };
 
 struct Field {
@@ -44,7 +53,7 @@ struct Field {
     size_t anchors = 0;
     float correction_scale = 1;
     bool fallback = false;
-    bool source(float x, float y, float& sx, float& sy) const;
+    bool source(float x, float y, float& sx, float& sy, bool allow_outside = false) const;
 };
 
 struct Audit {
@@ -61,6 +70,9 @@ struct Coverage {
 Field fit(const Image& photo, const Image& render, const std::vector<float>& depth,
           const std::vector<float>& opacity, const roma::PairPrediction& matches,
           const Settings& settings, const std::vector<uint8_t>& source_mask = {});
+CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector<float>& opacity,
+                              const roma::PairPrediction& matches, const Settings& settings,
+                              const camhost::Camera& camera, const std::vector<uint8_t>& source_mask = {});
 Audit audit(const Image& photo, const Image& corrected, const Image& render, const Field& field);
 std::vector<Audit> audit_common(const Image& photo, const std::vector<Image>& corrected,
                                 const Image& render, const std::vector<std::vector<uint8_t>>& masks);

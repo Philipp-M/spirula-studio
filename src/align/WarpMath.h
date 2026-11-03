@@ -6,6 +6,15 @@
 #include <cmath>
 
 namespace spirula::align::detail {
+inline float displacement_limit(const Settings& settings, int width, int height) {
+    return settings.max_displacement == 0 ? .05f*std::hypot((float)width,(float)height) : settings.max_displacement;
+}
+
+std::vector<float> depth_support(const Field& field, const std::vector<float>& weights);
+void regularize(Field& field, const std::vector<std::array<float,2>>& data,
+                const std::vector<float>& weights, const std::vector<float>& support,
+                const std::vector<float>& photo, const std::vector<uint8_t>& mask);
+
 inline bool sample(const std::vector<float>& v, int w, int h, int c, float x, float y, float* out) {
     if (!std::isfinite(x) || !std::isfinite(y) || x<0 || y<0 || x>w-1 || y>h-1 ||
         v.size()!=(size_t)w*h*c) return false;

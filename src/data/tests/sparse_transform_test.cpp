@@ -268,6 +268,42 @@ int main() {
         const fs::path dir = root / (text ? "colmap_txt" : "colmap_bin");
         write_colmap(dir / "sparse" / "0", cams, pts, text);
         const ParsedDataset before = parse(dir);
+        const auto model=dir/"sparse/0";
+        std::ofstream(model/"transform.json") << "{\"translation\":[1000,2000,3000],\"sourceCrs\":\"EPSG:4978\"}\n";
+        auto bytes=[](const fs::path& path){std::ifstream in(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
+        const std::string extension=text?".txt":".bin",original_images=bytes(model/("images"+extension));
+        const auto original_poses=text?read_images_text(model.string()):read_images_binary(model.string());
+        auto corrected=original_poses.begin()->second;corrected.tvec[0]+=.125;
+        const auto camera_copy=root/(text?"camera_copy_txt":"camera_copy_bin");
+        spirula::sparse_write_camera_copy(dir.string(),camera_copy.string(),{{corrected.image_id,corrected}});
+        const auto output=camera_copy/"sparse/0";
+        const auto output_poses=text?read_images_text(output.string()):read_images_binary(output.string());
+        check(bytes(model/("images"+extension))==original_images,tag+": camera refinement leaves source alignment untouched");
+        for(const auto& name:{"cameras"+extension,"points3D"+extension,std::string("transform.json")})
+            check(bytes(model/name)==bytes(output/name),tag+": camera refinement preserves "+name+" byte-for-byte");
+        bool poses_correct=original_poses.size()==output_poses.size();
+        for(const auto& [id,pose]:original_poses) {
+            const auto& expected=id==corrected.image_id?corrected:pose;
+            const auto& actual=output_poses.at(id);
+            for(int j=0;j<4;++j)poses_correct&=std::abs(actual.qvec[j]-expected.qvec[j])<1e-12;
+            for(int j=0;j<3;++j)poses_correct&=std::abs(actual.tvec[j]-expected.tvec[j])<1e-12;
+        }
+        check(poses_correct,tag+": only the selected world-to-camera pose changes");
+        const auto tracks_before=spirula::read_sparse_stats(dir.string()),tracks_after=spirula::read_sparse_stats(camera_copy.string());
+        check(tracks_before.track_beg==tracks_after.track_beg&&tracks_before.track_image==tracks_after.track_image&&
+              tracks_before.image_points==tracks_after.image_points,tag+": camera refinement preserves observations and tracks");
+        const auto warped_copy=root/(text?"warped_copy_txt":"warped_copy_bin");
+        corrected.name="changed extension and path/photo.png";size_t transported=0;
+        spirula::sparse_write_camera_copy(dir.string(),warped_copy.string(),{{corrected.image_id,corrected}},
+            [&](int32_t id,double& x,double& y){check(id==corrected.image_id&&x==10.5&&y==20.5,tag+": transports selected observations only");x+=3;y-=2;++transported;});
+        const auto warped_model=warped_copy/"sparse/0";
+        const auto warped_poses=text?read_images_text(warped_model.string()):read_images_binary(warped_model.string());
+        check(transported==1&&warped_poses.at(corrected.image_id).name==corrected.name,tag+": output name and observation count");
+        size_t checked_observations=0;
+        spirula::sparse_write_camera_copy(warped_copy.string(),(root/(text?"verified_txt":"verified_bin")).string(),warped_poses,
+            [&](int32_t id,double& x,double& y){check(x==(id==corrected.image_id?13.5:10.5)&&y==(id==corrected.image_id?18.5:20.5),tag+": stored transported pixel coordinates");++checked_observations;});
+        check(checked_observations==cams.size(),tag+": all observation indices survive transport");
+        check(bytes(warped_model/("points3D"+extension))==bytes(model/("points3D"+extension)),tag+": image warp leaves 3D tracks and coordinates untouched");
         spirula::SparseBaseline base;
         spirula::sparse_write_filtered(dir.string(), keep_all, &T, &base);
         const ParsedDataset after = parse(dir);
