@@ -99,15 +99,17 @@ unselected camera records remain in the copied model, so a sampled run is a
 review subset rather than a complete replacement image tree.
 
 Camera refinement currently requires COLMAP without rig frames and a fresh,
-complete run (no `--resume` or `--render-only`). It runs serially so rendering
-and matching do not compete for the GPU. Source filenames
+complete run (no `--resume` or `--render-only`). Rendering and matching share one
+GPU worker; CPU residual fitting, native resampling and encoding of the previous
+view overlap with the next view's GPU work. `--no-pipeline` selects serial
+execution. Source filenames
 and encodings are preserved; image-encoding options do not recompress them.
 For small remaining image errors, a separate image-warp run can use this refined
 dataset and keep its camera poses fixed.
 
-Camera refinement processes one image through both stages before moving to the
-next. By default, dense renders, depths, RoMa predictions and warp fields stay
-in RAM and are released after that image; no dense temporary files are written,
+Camera refinement keeps a bounded queue of GPU work, CPU output and input
+prefetch. By default, dense renders, depths, RoMa predictions and warp fields stay
+in RAM and are released after their image; no dense temporary files are written,
 including under `/tmp`. Sparse observation coordinates are transported while the
 field is still in memory. Only compact camera/observation metadata accumulates
 until the COLMAP model is written. The output contains only `images/`, `masks/`
@@ -116,6 +118,9 @@ and `sparse/`.
 `--keep-alignment-data` explicitly enables the review and persistent caches. It
 can retain hundreds of megabytes per view at a 2560-pixel working resolution;
 use it for small review samples rather than routine full-dataset processing.
+Agent validation runs belong under `/tmp`; production commands must not enable
+diagnostic retention unless the user explicitly requests it. See the production
+output rules in `AGENTS.md`.
 
 To apply both stages in one run:
 
@@ -137,6 +142,9 @@ The exported COLMAP model uses the output filenames and transports selected
 2D observation coordinates through the same mesh, including the half-pixel
 conversion between COLMAP's corner convention and the image field's integer
 pixel centers. Observation indices and 3D track associations remain intact.
+Existing observations outside the source photograph are retained unchanged;
+there is no photographic warp to evaluate there. In-image observations may move
+outside the output frame. Neither case rejects or removes the photograph.
 Intrinsics, 3D points and georeferencing remain unchanged. Stored sparse-point
 reprojection-error summaries describe the input reconstruction; they are not
 recomputed by this preprocessing command. This output is not a new bundle
@@ -209,6 +217,12 @@ reserved audit patches separate. Insufficient matching or unresolved deformation
 yields an unchanged fallback.
 The reported `correction_scale` is the minimum residual retention, not a scale
 on the complete camera or surface movement.
+
+An exception during correction retains the original photograph and source mask,
+with an already validated camera correction if available. The terminal identifies
+the unchanged photo and reason. Matching or metadata errors do not remove views
+from the training dataset. An unreadable source or unwritable output can still
+prevent export and is reported as a failed write. Dense diagnostics remain opt-in.
 
 The same triangles determine source coordinates and coverage. Final validity is
 exactly **warped source coverage intersected with the transported original mask

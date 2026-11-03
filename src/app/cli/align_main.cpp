@@ -28,6 +28,7 @@
 #include "sfm/core/Pose.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -114,7 +115,7 @@ Options parse(int argc,char** argv) {
     }
     if(o.image_format=="jpg")o.image_format="jpeg";
     if(o.residual_warp&&!o.refine_cameras)throw std::runtime_error("--residual-warp requires --refine-cameras");
-    if(o.refine_cameras){o.pipeline=false;if(o.resume||o.render_only)throw std::runtime_error("camera refinement requires a fresh complete run");}
+    if(o.refine_cameras){if(o.resume||o.render_only)throw std::runtime_error("camera refinement requires a fresh complete run");}
     if(o.image_format!="png"&&o.image_format!="jpeg")throw std::runtime_error("image format must be png, jpeg or jpg");
     if(!o.comparisons.empty()) {
         if(o.comparisons.size()<2||o.output.empty()||!o.data.empty()||!o.reference.empty()||o.all||o.resume||o.render_only||sampled||conversion_option)
@@ -434,12 +435,17 @@ int run(const Options& o) {
         options.low_width=800;options.low_height=std::max(16,(int)std::lround(800.0*h/w/16)*16);
         options.high_width=(w+3)/4*4;options.high_height=(h+3)/4*4;options.precision=precision;return options;
     };
-    std::vector<std::string> records;size_t succeeded=0;
+    std::vector<std::string> records;size_t succeeded=0,retained=0;
     int cpu_threads=1;
 #ifdef _OPENMP
     cpu_threads=std::max(1,omp_get_max_threads()-(o.pipeline?2:0));
 #endif
-    struct Input {nn::Image original;A::Image photo;std::vector<uint8_t> mask;Cache cache;};
+    struct Input {
+        nn::Image original;A::Image photo;std::vector<uint8_t> mask,working_mask;Cache cache;
+        A::CameraAlignment alignment;std::optional<ColmapImage> corrected_pose;
+        std::optional<spirula::roma::PairPrediction> initial_matches;
+        double camera_audit_before=0,camera_audit_after=0;
+    };
     auto prepare=[&](size_t k) {
 #ifdef _OPENMP
         if(o.pipeline)omp_set_num_threads(1);
@@ -450,12 +456,83 @@ int run(const Options& o) {
             throw std::runtime_error("source dimensions differ from parsed camera");
         input.photo=resized(input.original,w,h);
         input.mask=source_mask(ds.image_filenames[i],ds.mask_filenames.empty()?"":ds.mask_filenames[i],input.original.width,input.original.height);
+        if(!input.mask.empty()) {
+            input.working_mask.resize((size_t)w*h);
+            for(int y=0;y<h;++y)for(int x=0;x<w;++x)
+                input.working_mask[(size_t)y*w+x]=input.mask[(size_t)std::min(input.original.height-1,(int)((y+.5)*input.original.height/h))*input.original.width+std::min(input.original.width-1,(int)((x+.5)*input.original.width/w))];
+        }
         const auto cache_path=o.keep_alignment_data?dest/dirs[k]/"render.bin":o.reuse_renders.empty()?fs::path{}:o.reuse_renders/dirs[k]/"render.bin";
         if(!cache_path.empty()&&fs::exists(cache_path)) {
             input.cache=read_cache(cache_path);
             if(input.cache.render.width!=w||input.cache.render.height!=h)throw std::runtime_error("cached render dimensions differ from selected resolution");
         }
         return input;
+    };
+    auto refine_view=[&](size_t k,Input& input,spirula::roma::PairPrediction& matches,bool cached) {
+        const size_t i=selected[k];auto& cache=input.cache;const auto& photo=input.photo;
+        const auto& working_mask=input.working_mask;const int w=photo.width,h=photo.height;
+        const auto path=o.keep_alignment_data?dest/dirs[k]:fs::path{};
+        if(o.keep_alignment_data&&!cached)save_prediction(matches,path);
+        camhost::Camera camera;camera.width=w;camera.height=h;
+        camera.model=ds.camera_models[i];camera.tier=ds.camera_distortions[i];
+        camera.fx=post.intrins[i*4]*(double)w/ds.widths[i];camera.fy=post.intrins[i*4+1]*(double)h/ds.heights[i];
+        camera.cx=post.intrins[i*4+2]*(double)w/ds.widths[i];camera.cy=post.intrins[i*4+3]*(double)h/ds.heights[i];
+        std::copy_n(post.dist_coeffs.data()+i*8,8,camera.dist);
+        input.alignment=A::refine_camera(cache.depth,cache.opacity,matches,o.warp,camera,working_mask);
+        A::Field audit; audit.width=w;audit.height=h;
+        if(o.keep_alignment_data) {
+            audit.valid=working_mask.empty()?std::vector<uint8_t>((size_t)w*h,255):working_mask;
+            const auto pg=A::detail::gray(photo),rg=A::detail::gray(cache.render);
+            for(int y=16;y<h-16;y+=40)for(int x=16;x<w-16;x+=40)
+                if(A::detail::correlation(rg,pg,w,h,x,y,x,y,3)>-1)audit.audit.push_back({(float)x,(float)y});
+            input.camera_audit_before=A::audit(photo,photo,cache.render,audit).before;
+        }
+        if(input.alignment.accepted) {
+            const auto& correction=input.alignment.correction;
+            auto pose=source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal());
+            sfm::Pose old_pose{sfm::quaternionToRotation(pose.qvec),{pose.tvec[0],pose.tvec[1],pose.tvec[2]}},delta;
+            std::copy_n(correction.R,9,delta.R.begin());delta.t={correction.t[0],correction.t[1],correction.t[2]};
+            const auto updated=sfm::composePose(delta,old_pose);
+            pose.qvec=sfm::rotationToQuaternion(updated.R);pose.tvec={updated.t.x,updated.t.y,updated.t.z};
+            if(o.keep_alignment_data)save_image(cache.render,path/"initial-render.png");
+            if(o.keep_alignment_data&&!o.residual_warp)input.initial_matches=std::move(matches);else matches={};
+            matcher.unload();cache=render_view(k,&correction);release_scene();clamp_render(cache);
+            const auto refined_path=o.keep_alignment_data?path/"refined":fs::path{};
+            if(o.keep_alignment_data) {
+                save_image(cache.render,path/"render.png");write_cache(cache,path/"refined-render.bin");
+                fs::create_directories(refined_path);
+            }
+            bool refined_cached=false;
+            matches=prediction(matcher,cache,photo,matching_options(w,h),refined_path,checkpoint,refined_cached);
+            if(o.keep_alignment_data&&!refined_cached)save_prediction(matches,refined_path);
+            input.corrected_pose=pose;
+        }
+        if(o.keep_alignment_data)input.camera_audit_after=A::audit(photo,photo,cache.render,audit).before;
+    };
+    auto source_encoding=[&](size_t i) {
+        auto ext=fs::path(ds.image_filenames[i]).extension().string();
+        std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return (char)std::tolower(c);});
+        return (o.refine_cameras&&!o.residual_warp) || (o.image_format=="jpeg"?(ext==".jpg"||ext==".jpeg"):ext==".png");
+    };
+    auto retain_source=[&](size_t k,Input& input) {
+        const size_t i=selected[k];const int width=ds.widths[i],height=ds.heights[i];
+        const auto image=dest/"images"/relative[k],mask_path=dest/"masks"/fs::path(relative[k].string()+".png");
+        fs::create_directories(image.parent_path());fs::create_directories(mask_path.parent_path());
+        if(source_encoding(i))fs::copy_file(ds.image_filenames[i],image,fs::copy_options::overwrite_existing);
+        else {
+            if(input.original.empty())input.original=nn::load_image(ds.image_filenames[i]);
+            if(input.original.empty()||!nn::save_image(input.original,image.string(),o.image_format=="jpeg"?o.jpeg_quality:-1))
+                throw std::runtime_error("cannot retain original photograph");
+        }
+        auto mask=input.mask;
+        if(mask.empty())mask=source_mask(ds.image_filenames[i],ds.mask_filenames.empty()?"":ds.mask_filenames[i],width,height);
+        if(mask.empty())mask.assign((size_t)width*height,255);
+        if(!nn::save_gray_png(mask.data(),width,height,mask_path.string()))throw std::runtime_error("cannot retain source mask");
+        if(o.refine_cameras) {
+            auto pose=input.corrected_pose.value_or(source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal()));
+            pose.name=relative[k].generic_string();corrected_poses[pose.image_id]=pose;
+        }
+        return (size_t)std::count(mask.begin(),mask.end(),uint8_t(255));
     };
     auto finish=[&](size_t k,Input input,spirula::roma::PairPrediction matches,bool matches_cached,std::exception_ptr failure) {
 #ifdef _OPENMP
@@ -468,55 +545,17 @@ int run(const Options& o) {
             auto& cache=input.cache;auto& original=input.original;auto& photo=input.photo;const auto& input_mask=input.mask;
             const int w=cache.render.width,h=cache.render.height;
             if(o.keep_alignment_data) {
-                if(!matches_cached)save_prediction(matches,path);
+                if(!o.refine_cameras&&!matches_cached)save_prediction(matches,path);
                 save_image(photo,path/"original.png");
             }
-            std::vector<uint8_t> working_mask;
-            if(!input_mask.empty()) {
-                working_mask.resize((size_t)w*h);
-                for(int y=0;y<h;++y)for(int x=0;x<w;++x)
-                    working_mask[(size_t)y*w+x]=input_mask[(size_t)std::min(original.height-1,(int)((y+.5)*original.height/h))*original.width+std::min(original.width-1,(int)((x+.5)*original.width/w))];
-            }
-            camhost::Camera camera;camera.width=w;camera.height=h;
-            camera.model=ds.camera_models[i];camera.tier=ds.camera_distortions[i];
-            camera.fx=post.intrins[i*4]*(double)w/ds.widths[i];camera.fy=post.intrins[i*4+1]*(double)h/ds.heights[i];
-            camera.cx=post.intrins[i*4+2]*(double)w/ds.widths[i];camera.cy=post.intrins[i*4+3]*(double)h/ds.heights[i];
-            std::copy_n(post.dist_coeffs.data()+i*8,8,camera.dist);
+            const auto& working_mask=input.working_mask;
+            const auto& alignment=input.alignment;const auto& initial_matches=input.initial_matches;
+            auto corrected_pose=input.corrected_pose;
+            const auto camera_audit_before=input.camera_audit_before,camera_audit_after=input.camera_audit_after;
             auto field=A::fit(photo,cache.render,cache.depth,cache.opacity,matches,o.warp,working_mask);
-            const auto alignment=o.refine_cameras?A::refine_camera(cache.depth,cache.opacity,matches,o.warp,camera,working_mask):A::CameraAlignment{};
-            std::optional<spirula::roma::PairPrediction> initial_matches;
-            std::optional<ColmapImage> corrected_pose;
-            double camera_audit_before=0,camera_audit_after=0;
-            if(o.refine_cameras) {
-                const bool accepted=alignment.accepted;
-                A::use_identity(field);field.fallback=!accepted;
+            if(o.refine_cameras&&!o.residual_warp) {
+                A::use_identity(field);field.fallback=!alignment.accepted;
                 if(!working_mask.empty())field.valid=working_mask;
-                camera_audit_before=A::audit(photo,photo,cache.render,field).before;
-                if(accepted) {
-                    auto pose=source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal());
-                    sfm::Pose old_pose{sfm::quaternionToRotation(pose.qvec),{pose.tvec[0],pose.tvec[1],pose.tvec[2]}},delta;
-                    std::copy_n(alignment.correction.R,9,delta.R.begin());
-                    delta.t={alignment.correction.t[0],alignment.correction.t[1],alignment.correction.t[2]};
-                    const auto updated=sfm::composePose(delta,old_pose);
-                    pose.qvec=sfm::rotationToQuaternion(updated.R);pose.tvec={updated.t.x,updated.t.y,updated.t.z};corrected_pose=pose;
-                    if(o.keep_alignment_data) {
-                        save_image(cache.render,path/"initial-render.png");
-                        initial_matches=std::move(matches);
-                    }else matches={};
-                    matcher.unload();
-                    cache=render_view(k,&alignment.correction);release_scene();clamp_render(cache);
-                    const auto refined_path=o.keep_alignment_data?path/"refined":fs::path{};
-                    if(o.keep_alignment_data) {
-                        save_image(cache.render,path/"render.png");write_cache(cache,path/"refined-render.bin");
-                        fs::create_directories(refined_path);
-                    }
-                    bool cached=false;
-                    matches=prediction(matcher,cache,photo,matching_options(w,h),refined_path,checkpoint,cached);
-                    if(o.keep_alignment_data&&!cached)save_prediction(matches,refined_path);
-                    matcher.unload();
-                }
-                camera_audit_after=A::audit(photo,photo,cache.render,field).before;
-                if(o.residual_warp)field=A::fit(photo,cache.render,cache.depth,cache.opacity,matches,o.warp,working_mask);
             }
             nn::Image corrected;corrected.width=original.width;corrected.height=original.height;
             std::vector<uint8_t> mask;A::Coverage coverage;
@@ -536,7 +575,7 @@ int run(const Options& o) {
             const auto alignment_score=score;
             const auto image=fs::path("images")/relative[k],mask_name=fs::path("masks")/fs::path(relative[k].string()+".png");
             fs::create_directories((dest/image).parent_path());fs::create_directories((dest/mask_name).parent_path());
-            if(o.refine_cameras&&!o.residual_warp)fs::copy_file(ds.image_filenames[i],dest/image);
+            if(((o.refine_cameras&&!o.residual_warp)||field.fallback)&&source_encoding(i))fs::copy_file(ds.image_filenames[i],dest/image);
             else if(!nn::save_image(corrected,(dest/image).string(),o.image_format=="jpeg"?o.jpeg_quality:-1))throw std::runtime_error("cannot save native corrected image");
             if(!nn::save_gray_png(mask.data(),corrected.width,corrected.height,(dest/mask_name).string()))throw std::runtime_error("cannot save native mask");
             if((!o.refine_cameras||o.residual_warp)&&o.image_format=="jpeg"&&o.keep_alignment_data) {
@@ -572,25 +611,34 @@ int run(const Options& o) {
                 if(!corrected_pose)corrected_pose=source_poses.at(fs::path(ds.image_filenames[i]).lexically_normal());
                 corrected_pose->name=relative[k].generic_string();
                 auto mapped=observations.at(corrected_pose->image_id);
-                for(auto& t:field.triangles)std::swap(t.source,t.target);
-                A::index_field(field);
-                for(auto& point:mapped) {
-                    float tx,ty;
-                    // COLMAP uses corner-based coordinates; fields use integer pixel centers.
-                    if(!field.source((float)(point[0]*w/corrected.width-.5),(float)(point[1]*h/corrected.height-.5),tx,ty,true))
-                        throw std::runtime_error("COLMAP observation lies outside the source warp");
-                    point={(tx+.5)*corrected.width/w,(ty+.5)*corrected.height/h};
-                }
+                const auto outside=A::transport_observations(field,corrected.width,corrected.height,mapped);
+                record<<",\"observations_outside_source\":"<<outside;
                 observations.at(corrected_pose->image_id)=std::move(mapped);
             }
             if(corrected_pose)corrected_poses[corrected_pose->image_id]=*corrected_pose;
+            if(!fallback.empty()) {
+                ++retained;
+                std::fprintf(stderr,"%s\n",format(M::unchanged,{ds.image_filenames[i],fallback}).c_str());
+            }
             ++succeeded;
         }catch(const std::exception& e){
-            std::error_code ec;
-            fs::remove(dest/"images"/relative[k],ec);
-            fs::remove(dest/"masks"/fs::path(relative[k].string()+".png"),ec);
-            record<<",\"status\":\"failed\",\"error\":"<<json_quote(e.what());
-            std::fprintf(stderr,"%s\n",format(M::error,{e.what()}).c_str());
+            record.str("");record.clear();
+            record<<"{\"source\":"<<json_quote(ds.image_filenames[i])<<",\"preview\":"<<json_quote(dirs[k].generic_string())
+                <<",\"preview_available\":false,\"error\":"<<json_quote(e.what());
+            try {
+                const auto kept=retain_source(k,input),pixels=(size_t)ds.widths[i]*ds.heights[i];
+                record<<",\"status\":\"fallback\",\"fallback_reason\":"<<json_quote(e.what())
+                    <<",\"width\":"<<ds.widths[i]<<",\"height\":"<<ds.heights[i]
+                    <<",\"valid_fraction\":"<<(double)kept/pixels<<",\"coverage_loss_pixels\":0,\"source_mask_loss_pixels\":"<<pixels-kept
+                    <<",\"confidence_loss_pixels\":0,\"camera_refined\":"<<(input.corrected_pose?"true":"false")
+                    <<",\"image\":"<<json_quote((fs::path("images")/relative[k]).generic_string())
+                    <<",\"mask\":"<<json_quote((fs::path("masks")/fs::path(relative[k].string()+".png")).generic_string());
+                ++succeeded;++retained;
+                std::fprintf(stderr,"%s\n",format(M::unchanged,{ds.image_filenames[i],e.what()}).c_str());
+            }catch(const std::exception& output_error) {
+                record<<",\"status\":\"failed\",\"output_error\":"<<json_quote(output_error.what());
+                std::fprintf(stderr,"%s\n",format(M::error,{output_error.what()}).c_str());
+            }
         }
         record<<'}';if(o.keep_alignment_data)records.push_back(record.str());
         std::printf("%s\n",format(M::progress,{(long long)(k+1),(long long)selected.size(),ds.image_filenames[i]}).c_str());
@@ -617,13 +665,14 @@ int run(const Options& o) {
         if(k+1<selected.size())prefetched=std::async(policy,prepare,k+1);
         if(!failure)try {
             if(input.cache.render.rgb.empty())input.cache=render_view(k);
-            if(!o.keep_alignment_data){release_scene();clamp_render(input.cache);}
+            release_scene();clamp_render(input.cache);
             const int w=input.photo.width,h=input.photo.height;
             const auto options=matching_options(w,h);
             const auto match_path=o.keep_alignment_data?dest/dirs[k]:reuse_matches?o.reuse_renders/dirs[k]:fs::path{};
             matches=prediction(matcher,input.cache,input.photo,options,match_path,checkpoint,matches_cached);
+            if(o.refine_cameras)refine_view(k,input,matches,matches_cached);
         }catch(...){failure=std::current_exception();}
-        if(!o.keep_alignment_data){matcher.unload();release_scene();}
+        if(!o.keep_alignment_data||o.refine_cameras){matcher.unload();release_scene();}
         if(completed.valid())completed.get();
         completed=std::async(policy,finish,k,std::move(input),std::move(matches),matches_cached,failure);
         if(!o.pipeline)completed.get();
@@ -639,7 +688,7 @@ int run(const Options& o) {
         spirula::sparse_write_camera_copy(o.data.string(),dest.string(),corrected_poses,
             o.residual_warp?spirula::SparseObservationTransform(transport):spirula::SparseObservationTransform{});
     }
-    std::printf("%s\n",format(M::complete,{(o.keep_alignment_data?dest/"index.html":dest).string(),(long long)succeeded,(long long)(selected.size()-succeeded)}).c_str());
+    std::printf("%s\n",format(M::complete,{(o.keep_alignment_data?dest/"index.html":dest).string(),(long long)succeeded,(long long)(selected.size()-succeeded),(long long)retained}).c_str());
     return succeeded==selected.size()?0:1;
 }
 }

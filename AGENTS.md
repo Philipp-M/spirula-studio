@@ -34,6 +34,32 @@ Direction of travel, so you don't push the wrong way:
   pose-normalization reference). Nothing there may be imported by anything,
   and nothing in the build may need it.
 
+## Production output and test artifacts
+
+The user works with large datasets and wants only the requested end result in
+the output directory. Diagnostic and test data are not deliverables by default.
+
+- Keep production output limited to files needed to use the result. Do not add
+  review pages, debug renders, dense matches, intermediate depths or warps,
+  benchmark reports, or extra copies of input photographs.
+- Test as needed, but put agent-owned test outputs and any necessary scratch
+  files under `/tmp`, separate from the user's dataset and destination.
+- Prefer bounded, per-image processing in RAM. Release dense intermediates as
+  soon as their final outputs and metadata are ready; do not spool an entire
+  dataset to disk or move that spool to `/tmp` as a substitute for streaming.
+- Persistent diagnostics require an explicit user request. Do not silently
+  enable retention flags such as `--keep-alignment-data`, or include them in
+  suggested production commands. Agent test runs may enable them under `/tmp`.
+- Check output contents and storage growth when validating a batch workflow.
+  Verify that disabling diagnostics preserves the final result. SSD writes and
+  disk usage are design constraints, not costs to discover after a full run.
+- Remove task-owned scratch when no longer needed. Keep source data and final
+  outputs separate from scratch cleanup.
+- Training-photo alignment is judged against the reference splat. An unavailable
+  correction must retain the source photo and mask, with any validated camera
+  correction. Auxiliary sparse observations outside image bounds must not drop
+  photographs from the output dataset.
+
 ## Repo map
 
 ```

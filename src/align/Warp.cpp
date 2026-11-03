@@ -39,6 +39,26 @@ bool Field::source(float x,float y,float& sx,float& sy,bool allow_outside) const
     return covered&&(allow_outside||(sx>=-.501f&&sy>=-.501f&&sx<=width-.499f&&sy<=height-.499f));
 }
 
+size_t transport_observations(const Field& field,int width,int height,std::vector<std::array<double,2>>& observations) {
+    if(width<=0||height<=0||field.width<=0||field.height<=0)throw std::runtime_error("invalid observation image dimensions");
+    Field inverse;inverse.width=field.width;inverse.height=field.height;
+    inverse.columns=field.columns;inverse.rows=field.rows;inverse.spacing=field.spacing;
+    inverse.triangles=field.triangles;
+    for(auto& t:inverse.triangles)std::swap(t.source,t.target);
+    index_field(inverse);size_t outside=0;
+    for(auto& point:observations) {
+        if(!std::isfinite(point[0])||!std::isfinite(point[1]))throw std::runtime_error("nonfinite COLMAP observation");
+        // Cropped/undistorted COLMAP models can retain observations outside the delivered image.
+        if(point[0]<0||point[1]<0||point[0]>width||point[1]>height){++outside;continue;}
+        float tx,ty;
+        // COLMAP uses corner-based coordinates; fields use integer pixel centers.
+        if(!inverse.source((float)(point[0]*field.width/width-.5),(float)(point[1]*field.height/height-.5),tx,ty,true))
+            throw std::runtime_error("source warp does not cover an in-image COLMAP observation");
+        point={(tx+.5)*width/field.width,(ty+.5)*height/field.height};
+    }
+    return outside;
+}
+
 void resample(const std::vector<uint8_t>& original,int w,int h,const std::vector<uint8_t>& original_mask,
               const Field& f,std::vector<uint8_t>& corrected,std::vector<uint8_t>& mask,Coverage* coverage) {
     if(w<=0||h<=0||original.size()!=(size_t)w*h*3||(!original_mask.empty()&&original_mask.size()!=(size_t)w*h))

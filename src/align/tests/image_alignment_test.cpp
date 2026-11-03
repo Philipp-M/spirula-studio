@@ -107,6 +107,16 @@ int main() {
               "observation transport inverted the image correction");
         check(!inverse.source(w-1,80,sx,sy)&&inverse.source(w-1,80,sx,sy,true)&&sx>w-1,
               "observation transport lost coordinates outside the output crop");
+        std::vector<std::array<double,2>> observations{{10.5,20.5},{0,0},{(double)nw,(double)nh},
+            {-2,30},{nw+12.0,30},{30,-70},{30,nh+62.0}};
+        const auto before_transport=observations;
+        check(A::transport_observations(shifted,nw,nh,observations)==4,"off-image observations were not preserved and counted");
+        for(size_t i=0;i<observations.size();++i) {
+            const double dx=i<3?3.0*nw/w:0;
+            check(std::abs(observations[i][0]-before_transport[i][0]-dx)<.001&&
+                  std::abs(observations[i][1]-before_transport[i][1])<.001,
+                  "observation transport dropped, clamped or changed an off-image record");
+        }
         auto smooth=identity;
         auto movement=[&](float x,float y){return 2*std::sin(3.14159265f*x/(w-1))*std::sin(3.14159265f*y/(h-1));};
         for(int y=0;y<h;++y)for(int x=0;x<w;++x) {

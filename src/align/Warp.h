@@ -81,6 +81,8 @@ void resample(const std::vector<uint8_t>& original, int width, int height,
               std::vector<uint8_t>& corrected, std::vector<uint8_t>& mask,
               Coverage* coverage = nullptr);
 void index_field(Field& field);
+size_t transport_observations(const Field& field, int width, int height,
+                              std::vector<std::array<double,2>>& observations);
 void use_identity(Field& field);
 void save_field(const Field& field, const std::filesystem::path& path);
 Field load_field(const std::filesystem::path& path);
