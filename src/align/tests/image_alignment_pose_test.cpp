@@ -117,9 +117,13 @@ int main() {
             const double pixel[2]={(double)x,200};double ray[3],a[3],b[3],pa[2],pb[2];
             camhost::pixel_ray(camera,pixel,ray);
             for(int c=0;c<3;++c){a[c]=depth[(size_t)200*w+x]*ray[c];b[c]=1000*a[c];}
-            double ma[3],mb[3];image_alignment.direct_correction.apply(a,ma);scaled.direct_correction.apply(b,mb);
-            if(!camhost::ray_pixel(camera,ma,pa)||!camhost::ray_pixel(camera,mb,pb)||std::hypot(pa[0]-pb[0],pa[1]-pb[1])>.1)
-                throw std::runtime_error("direct camera refinement depends on world-coordinate units");
+            for(bool fine:{false,true}) {
+                const auto& first=fine?image_alignment.direct_polish.correction:image_alignment.direct_correction;
+                const auto& second=fine?scaled.direct_polish.correction:scaled.direct_correction;
+                double ma[3],mb[3];first.apply(a,ma);second.apply(b,mb);
+                if(!camhost::ray_pixel(camera,ma,pa)||!camhost::ray_pixel(camera,mb,pb)||std::hypot(pa[0]-pb[0],pa[1]-pb[1])>.1)
+                    throw std::runtime_error("direct camera refinement depends on world-coordinate units");
+            }
         }
         settings.max_displacement=40;
         const auto limited=A::refine_camera(depth,opacity,matches,settings,camera);

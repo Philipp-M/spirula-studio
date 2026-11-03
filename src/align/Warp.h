@@ -20,6 +20,7 @@ struct Settings {
     int spacing = 8, patch_radius = 3, refine_radius = 3;
     float min_overlap = 0.7f, max_cycle = 1.5f, max_displacement = 0.0f;
     float min_correlation = 0.75f, depth_jump = 0.04f;
+    bool camera_residual = false;
 };
 
 struct MatchDiagnostics {
@@ -36,12 +37,19 @@ struct Triangle {
 enum class CameraFitStatus { InsufficientSupport, InsufficientHoldout, NoImprovement, Accepted, ImageValidated, MatchValidated, StructureValidated, ImageRejected };
 const char* camera_fit_status(CameraFitStatus status);
 
+struct CameraPolish {
+    Sim3 correction;
+    double geometry_error = 0;
+    bool candidate = false;
+};
+
 struct CameraAlignment {
     Sim3 correction;
     Sim3 photometric_correction;
     Sim3 rotation_correction;
     Sim3 direct_correction;
     Sim3 structure_correction;
+    CameraPolish rotation_polish, direct_polish;
     bool accepted = false;
     bool candidate = false, photometric_candidate = false;
     bool rotation_candidate = false;

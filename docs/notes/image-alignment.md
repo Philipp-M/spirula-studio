@@ -118,7 +118,17 @@ These are camera transforms, not image deformations.
 A direct six-parameter image refinement complements the rotation-only proposal.
 It normalizes scene range internally so numerical translation derivatives remain
 useful regardless of world-coordinate units. The exported translation remains in
-the original world units. Foreground gradient-profile matches also supply
+the original world units. After the quarter- and half-resolution stabilization,
+a bounded full-resolution pass weights reliable nearby observations more strongly:
+match certainty times median scene range divided by sample range, capped between
+0.25 and 16. The ratio is independent of world units. Held-out weighted agreement
+must improve, and unweighted agreement cannot lose more than 0.001 NCC. The
+coarse camera proposal remains available. Only when a direct-image or
+rotation-only proposal wins does its finer candidate get one additional render.
+That render must improve mean fine/coarse agreement by 0.001 while losing at most
+0.001 at either scale relative to the coarse result. Rejection retains the coarse
+pose. This uses the same final neural matching pass, without another render/match
+iteration. Foreground gradient-profile matches also supply
 normal-only camera constraints, with depth taken from nearby opaque, locally
 stable rendered support. Their weights are reduced if the fit damages the
 held-out interior matches. Separate edge locations are reserved for validation.
@@ -171,6 +181,16 @@ image agreement. These
 are alternative initializations, not unconditional copying of a neighbour's
 camera. Ordered capture names help this bounded search; unrelated filename
 ordering does not provide the same initialization prior.
+
+A recovered camera with more than 0.75 working pixels of interior residual can
+use the existing extra refinement step when the geometric fit predicts an
+improvement. Its actual render must validate before replacing the recovered
+pose. This shares a one-attempt budget with structural polishing, including
+rejected trials. Polishing may not reduce fine or coarse image agreement by
+more than 0.001 NCC, including when validating through fresh RoMa matches.
+Rejected or failed trials retain the recovered pose and matches.
+Recovery that has not yet reached the three-pixel geometry gate retains the
+initial validation routes; the stricter polishing guard applies after that gate.
 
 The accepted pose is re-rendered and matched again against the untouched photo.
 The review offers initial/refined renders and before/after correspondence-error
@@ -249,6 +269,28 @@ Geometric acceptance is checked before compression. JPEG previews and reported
 output scores are regenerated from the saved JPEG, so they include compression
 loss; `alignment_audit_before/after` retain the scores before encoding.
 
+## Bounded residuals after camera alignment
+
+The default camera-first pipeline fits a robust ten-parameter residual model:
+affine motion, two shared radial terms and two shared tangential terms. Reliable
+nearby matches receive median-relative range weights; foreground profile matches
+constrain their measured normal direction. This describes a coherent correction,
+not a new physical camera calibration. Intrinsics and the fixed world stay unchanged.
+
+The local mesh may depart from that model by at most 0.25 working pixels at the
+image centre, about 0.72 at a side midpoint and 4 at a corner. The allowance varies
+smoothly with normalized radius. A smooth saturation applies to the local remainder;
+the global correction is not faded toward zero. Mesh safety and strength selection
+blend toward the same model, so they cannot bypass the bound. Conservative retries
+also retain it. Larger interior matching errors remain visible instead of being
+hidden with arbitrary local deformation. Image agreement can therefore be lower
+than an unconstrained warp while source geometry is better preserved.
+
+`--warp-only` retains the separate free-form image-registration mode for input
+cameras that have not undergone this refinement. No new option is needed for
+the bounded policy in the default camera-first pipeline. Processing remains
+per-image in RAM; the small linear fit adds no inference or rendering pass.
+
 ## Movement and coverage
 
 The reference is rendered at the selected cameras. RGB, median ray depth and
@@ -304,10 +346,25 @@ Straight segments detected independently in the photograph protect against a
 misshapen reference. Signed gradients must trace the same straight edge through
 nine samples, over 32- and 64-pixel spans. Arbitrary segment directions contribute
 normal-only second-difference constraints through bilinear mesh interpolation.
-A 0.25-pixel curvature allowance preserves small smooth corrections; larger local
-bends are penalized even if reference matching prefers them. These constraints
+The curvature allowance varies smoothly from 0.0625 working pixels near the
+image centre to 0.25 at the corners. Tangent bending protection is up to four
+times stronger centrally. Straight segments also resist local normal-direction
+tilting relative to the broad affine correction: the permitted gradient grows
+from 0.5% centrally to 4% at the corners. These penalties protect source geometry
+without fading its displacement toward zero, which could itself bend a structure.
+Larger local bends are penalized even if reference matching prefers them. These constraints
 also respect source masks. The conservative retry disables both the added edge
 matches and the source-line constraints, preserving the original RoMa fallback.
+
+Short, faint segments use a supplemental pass where the long-segment detector
+has no nearby parallel support. Up to four separated seeds are checked over
+16-, 24- and 32-pixel spans. The constraints extend at most one mesh cell
+(eight working pixels) beyond that support to protect weak endpoints. Besides
+curvature, they limit excess normal displacement gradient to 4% relative to the
+broad affine correction. Coherent affine motion remains free; a short rod
+cannot acquire an arbitrary local tilt merely because its tip follows background
+matches. Long-segment detection retains priority over supplemental traces. The conservative
+retry retains its original bending strength.
 
 `--min-overlap` and `--min-correlation` control soft weighting, `--max-cycle`
 controls cycle weighting, and `--max-displacement` excludes implausible anchors.

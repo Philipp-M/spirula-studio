@@ -122,8 +122,56 @@ void oblique_photo_line() {
     if(high-low>.7f)throw std::runtime_error("reference mismatch bent a straight photographic line");
 }
 
+void short_weak_tip() {
+    const int w=256,h=192;
+    A::Field f;f.width=w;f.height=h;f.spacing=8;f.columns=w/8+1;f.rows=h/8+1;
+    const size_t n=(size_t)f.columns*f.rows;
+    f.displacement.resize(n);f.depth.assign(n,20);
+    std::vector<float> photo((size_t)w*h,.2f),weights(n,1),support(n,1);
+    std::vector<std::array<float,2>> data(n);
+    std::vector<std::array<float,4>> anchors(n);
+    for(int y=80;y<148;++y)for(int x=0;x<w;++x)
+        photo[(size_t)y*w+x]+=(y<112?.18f:.6f)*std::exp(-std::pow((x-128.f)/(y<112?1.5f:3.f),2));
+    for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x) {
+        const size_t k=(size_t)y*f.columns+x;
+        data[k]={(float)(std::clamp(.16f*(112-y*8),0.f,6.f)*std::exp(-std::pow((x*8-128.f)/32,2))),0};
+        if(x==16&&y*8>=112&&y*8<148)anchors[k]={1,0,0,16};
+    }
+    A::detail::regularize(f,data,weights,support,photo,{},anchors);
+    std::vector<float> horizontal(n);for(size_t k=0;k<n;++k)horizontal[k]=f.displacement[k][0];
+    float top=0,base=0;
+    A::detail::sample(horizontal,f.columns,f.rows,1,128.5f/8,84.5f/8,&top);
+    A::detail::sample(horizontal,f.columns,f.rows,1,128.5f/8,108.5f/8,&base);
+    std::cout<<"short weak tip: shear="<<std::abs(top-base)<<'\n';
+    if(std::abs(top-base)>1.5f)throw std::runtime_error("weak short tip followed the background shear");
+    for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x)data[(size_t)y*f.columns+x]={.1f*y*8,.05f*x*8};
+    f.displacement=data;
+    A::detail::regularize(f,data,weights,support,photo,{},std::vector<std::array<float,4>>(n));
+    for(size_t k=0;k<n;++k)for(int c=0;c<2;++c)if(std::abs(f.displacement[k][c]-data[k][c])>1e-4f)
+        throw std::runtime_error("short-line protection suppressed a coherent affine correction");
+}
+
+void local_line_rotation() {
+    const int w=512,h=384;
+    A::Field f;f.width=w;f.height=h;f.spacing=8;f.columns=w/8+1;f.rows=h/8+1;
+    const size_t n=(size_t)f.columns*f.rows;
+    f.displacement.resize(n);f.depth.assign(n,10);
+    std::vector<float> photo((size_t)w*h),weights(n,1),support(n,1);
+    std::vector<std::array<float,2>> data(n);
+    for(int y=0;y<h;++y)for(int x=0;x<w;++x)
+        photo[(size_t)y*w+x]=.2f+.6f*std::exp(-std::pow((x-256.f)/3,2.f));
+    for(int y=0;y<f.rows;++y)for(int x=0;x<f.columns;++x)
+        data[(size_t)y*f.columns+x]={.06f*(y*8-192)*std::exp(-std::pow((x*8-256.f)/48,2.f)),0};
+    A::detail::regularize(f,data,weights,support,photo,{},std::vector<std::array<float,4>>(n));
+    const float shear=std::abs(f.displacement[32*f.columns+32][0]-f.displacement[16*f.columns+32][0]);
+    std::cout<<"central straight rod: local shear="<<shear<<'\n';
+    if(shear>1.5f)throw std::runtime_error("local matches rotated a central photographic structure");
+}
+
 int main() {
     try {
+        local_line_rotation();
+        short_weak_tip();
         oblique_photo_line();
         thin_foreground();
         const int w = 512, h = 384;
@@ -201,7 +249,8 @@ int main() {
             for(int c=0;c<3;++c){photo.rgb[3*i+c]=signal(px,py);render.rgb[3*i+c]=signal((float)x,(float)y);}
         }
         A::Settings settings;settings.refine_radius=0;
-        for(bool foreground:{false,true}) {
+        for(bool foreground:{false,true}) for(bool bounded:{false,true}) {
+        settings.camera_residual=bounded;
         if(foreground)for(int y=0;y<h;++y)for(int x=0;x<w;++x)
             depth[(size_t)y*w+x]=signal((float)x,(float)y)>.21f?10:100;
         const auto rectified=A::fit(photo,render,depth,opacity,radial,settings);
@@ -212,7 +261,7 @@ int main() {
             const float normal=std::abs(sx-q[0]);normal_sum+=normal;normal_max=std::max(normal_max,normal);
             initial_sum+=std::abs(x-q[0]);
         }
-        std::cout<<"radial correction: foreground="<<foreground<<" mean="<<sum/count<<" max="<<maximum<<" normal mean="<<normal_sum/count<<" normal max="<<normal_max<<'\n';
+        std::cout<<"radial correction: foreground="<<foreground<<" bounded="<<bounded<<" mean="<<sum/count<<" max="<<maximum<<" normal mean="<<normal_sum/count<<" normal max="<<normal_max<<'\n';
         if(rectified.fallback||normal_sum/count>.5||normal_max>1||normal_sum>.2*initial_sum)
             throw std::runtime_error("structure regularization suppressed smooth lens correction");
         }

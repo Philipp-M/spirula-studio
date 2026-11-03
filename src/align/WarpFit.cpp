@@ -263,11 +263,14 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     const auto structure=refine_structure?detail::structure_matches(f,pg,rg,depth,opacity,matches,s,source_mask):
         std::vector<std::array<float,4>>(n);
     f.structure_anchors=std::count_if(structure.begin(),structure.end(),[](const auto& a){return a[3]>0;});
+    const auto residual_base=s.camera_residual?detail::smooth_residual(f,data,weights,structure):std::vector<Vec>{};
+    if(s.camera_residual)f.displacement=residual_base;
     detail::regularize(f,data,weights,support,pg,source_mask,structure,refine_structure);
+    if(s.camera_residual)detail::limit_residual(f,residual_base);
     auto labels=surfaces(f,support);
     const auto fitted=f.displacement;std::vector<float> strength(n,1);
     auto safety_weights=weights;for(float& v:safety_weights)v+=.001f;
-    const auto safe_base=broad_field(fitted,safety_weights,f,labels);
+    const auto safe_base=s.camera_residual?residual_base:broad_field(fitted,safety_weights,f,labels);
     for(int attempt=0;attempt<32;++attempt) {
         mesh(f,labels);bool safe=true;
         for(const auto& t:f.triangles) {

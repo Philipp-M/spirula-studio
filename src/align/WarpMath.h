@@ -11,11 +11,17 @@ inline float displacement_limit(const Settings& settings, int width, int height)
 }
 
 std::vector<float> depth_support(const Field& field, const std::vector<float>& weights);
+std::vector<std::array<float,2>> smooth_residual(const Field& field,
+    const std::vector<std::array<float,2>>& data,const std::vector<float>& weights,
+    const std::vector<std::array<float,4>>& structure);
+void limit_residual(Field& field,const std::vector<std::array<float,2>>& baseline);
 struct LineConstraint {
     std::array<size_t,12> nodes{};
     std::array<float,12> coefficients{};
     std::array<float,2> normal{};
     int count = 0;
+    float allowance = .25f;
+    bool relative = false;
 };
 std::vector<LineConstraint> straight_lines(const Field& field,const std::vector<float>& photo,
                                          const std::vector<uint8_t>& mask);

@@ -136,7 +136,11 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
                     tangent = std::min(tangent,edges.bending[q][d]);
                 }
                 const float base = band == 0 ? 4*std::min(coupling(a,k),coupling(k,c)) : 0;
-                const float bend = (base+16*tangent)/(v[0]*v[0]+v[1]*v[1]);
+                const float nx=2.f*std::min(x*f.spacing,f.width)/f.width-1;
+                const float ny=2.f*std::min(y*f.spacing,f.height)/f.height-1;
+                const float radius=.5f*(nx*nx+ny*ny);
+                const float protection=1+(preserve_lines?3:0)*(1-radius)*(1-radius);
+                const float bend = (base+16*protection*tangent)/(v[0]*v[0]+v[1]*v[1]);
                 const size_t ids[3] = {a,k,c}; const float coefficients[3] = {1,-2,1};
                 for (int i = 0; i < 3; ++i) {
                     matrix[ids[i]][0] += bend*coefficients[i]*coefficients[i];
@@ -190,8 +194,16 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
                 curvature+=coefficient*(broad[line.nodes[i]][c]+value[line.nodes[i]][c]);
             }
             // Subpixel curvature can be lens correction; larger local bends need photographic support.
-            line_weights[j]=robust?32:0;
-            const float target=std::clamp(curvature,-.25f,.25f);
+            line_weights[j]=robust?(line.relative?128:32):0;
+            const float reference=line.relative?base:0;
+            float radius=0;
+            for(int i=0;i<line.count;++i) {
+                const float x=2.f*std::min((int)(line.nodes[i]%f.columns)*f.spacing,f.width)/f.width-1;
+                const float y=2.f*std::min((int)(line.nodes[i]/f.columns)*f.spacing,f.height)/f.height-1;
+                radius+=.5f*(x*x+y*y)/line.count;
+            }
+            const float allowance=line.relative?line.allowance:line.allowance*(.25f+.75f*radius*radius);
+            const float target=reference+std::clamp(curvature-reference,-allowance,allowance);
             for(int i=0;i<line.count;++i) {
                 const size_t k=line.nodes[i];const float coefficient=line.coefficients[i];
                 line_diagonal[k]+=line_weights[j]*coefficient*coefficient;

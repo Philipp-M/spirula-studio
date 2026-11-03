@@ -14,6 +14,7 @@ struct Observation {
     int layer;
     bool holdout;
     std::array<double,2> normal{};
+    double image_weight = 1;
 };
 
 bool project(const camhost::Camera& camera, const sfm::Pose& pose, const sfm::Vec3& point, double* pixel) {
@@ -87,18 +88,19 @@ std::vector<Observation> image_matches(const std::vector<Observation>& observati
 }
 
 bool refine_image_pose(const camhost::Camera& camera,std::vector<Observation> observations,
-                       const Image& photo,const Image& render,const std::vector<uint8_t>& mask,sfm::Pose& pose,int dof) {
+                       const Image& photo,const Image& render,const std::vector<uint8_t>& mask,sfm::Pose& pose,int dof,sfm::Pose& polished) {
+    std::vector<double> ranges;for(const auto& o:observations)ranges.push_back(o.point.norm());
+    auto middle=ranges.begin()+ranges.size()/2;std::nth_element(ranges.begin(),middle,ranges.end());
+    for(auto& o:observations)o.image_weight*=std::clamp(*middle/o.point.norm(),.25,16.);
     double scene_scale=1;
     if(dof==6) {
-        std::vector<double> ranges;for(const auto& o:observations)ranges.push_back(o.point.norm());
-        auto middle=ranges.begin()+ranges.size()/2;std::nth_element(ranges.begin(),middle,ranges.end());
         scene_scale=*middle;
         // Finite differences must move subpixel image samples regardless of world units.
         for(auto& o:observations)o.point=o.point*(1/scene_scale);
         pose.t=pose.t*(1/scene_scale);
     }
-    const auto pg=detail::gray(photo),rg=detail::gray(render);double gain=0;size_t held=0;
-    for(int scale:{4,2}) {
+    const auto pg=detail::gray(photo),rg=detail::gray(render);double gain=0;size_t held=0;bool coarse_gain=false;sfm::Pose coarse_pose=pose;
+    for(int scale:{4,2,1}) {
         const int w=std::max(16,photo.width/scale),h=std::max(16,photo.height/scale);
         std::vector<float> a((size_t)w*h),b(a.size());
         resize_lanczos3<float,1>(pg.data(),photo.height,photo.width,a.data(),h,w);
@@ -116,22 +118,29 @@ bool refine_image_pose(const camhost::Camera& camera,std::vector<Observation> ob
             if(observations[j].holdout)validation.push_back((int)j);
             else if(j%4==0)train.push_back((int)j);
         }
-        if(train.size()<32||validation.size()<10){pose.t=pose.t*scene_scale;return false;}
+        if(train.size()<32||validation.size()<10){if(scale==1)break;pose.t=pose.t*scene_scale;return false;}
+        auto weight=[&](int j){return scale==1?observations[j].image_weight:1.;};
         auto residual=[&](const sfm::Pose& p,double,int j,double* r) {
-            const float score=correlation(p,train[j]);r[0]=score<-1?1e3:std::sqrt(std::max(1e-6f,1-score));r[1]=0;
+            const float score=correlation(p,train[j]);
+            r[0]=(score<-1?1e3:std::sqrt(std::max(1e-6f,1-score)))*std::sqrt(weight(train[j]));r[1]=0;
         };
         auto cost=[&](const sfm::Pose& p){double sum=0,r[2];for(size_t j=0;j<train.size();++j){residual(p,1,(int)j,r);sum+=r[0]*r[0];}return sum;};
         if(scale==4&&cost(sfm::Pose{})<cost(pose))pose=sfm::Pose{};
         const auto previous=pose;double focal=1;
         sfm::pose_detail::lmRefine((int)train.size(),residual,dof,pose,focal,12);
-        double improvement=0;
-        for(int j:validation)improvement+=std::max(-1.0f,correlation(pose,j))-std::max(-1.0f,correlation(previous,j));
-        if(improvement<0)pose=previous;
+        double improvement=0,unweighted=0,total_weight=0;
+        for(int j:validation) {
+            const double delta=std::max(-1.0f,correlation(pose,j))-std::max(-1.0f,correlation(previous,j));
+            improvement+=weight(j)*delta;unweighted+=delta;total_weight+=weight(j);
+        }
+        if(improvement<(scale==1?.0005*total_weight:0)||unweighted<-.001*validation.size())pose=previous;
         gain=0;held=validation.size();
         for(int j:validation)gain+=std::max(-1.0f,correlation(pose,j))-correlation(sfm::Pose{},j);
+        if(scale==2){coarse_gain=gain/held>.001;coarse_pose=pose;}
     }
-    pose.t=pose.t*scene_scale;
-    return held>=10&&gain/held>.001;
+    polished=pose;polished.t=polished.t*scene_scale;
+    pose=coarse_pose;pose.t=pose.t*scene_scale;
+    return coarse_gain;
 }
 }
 
@@ -186,6 +195,7 @@ CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector
         const int layer = (int)std::floor(std::log2(z));
         const bool held = (x/step)%5 == 2 && (y/step)%5 == 2;
         observations.push_back({{z*ray[0],z*ray[1],z*ray[2]},{qx,qy},{(double)x,(double)y},c*bc,layer,held});
+        observations.back().image_weight=c*bc;
         if (!held) ++populations[layer];
     }
     if (observations.size() < 64) {
@@ -222,8 +232,8 @@ CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector
             result.photometric_error_after=raw_after/total;
             result.photometric_candidate=refined_after<.995*refined_before&&raw_after<before+.5*total;
             set_correction(result.photometric_correction,image_pose);
-            auto rotation=fit_pose(camera,refined,training,3);
-            const bool image_gain=refine_image_pose(camera,observations,*photo,*render,mask,rotation,3);
+            auto rotation=fit_pose(camera,refined,training,3);sfm::Pose rotation_polish;
+            const bool image_gain=refine_image_pose(camera,observations,*photo,*render,mask,rotation,3,rotation_polish);
             refined_after=0;raw_after=0;
             for(size_t k=0;k<observations.size();++k)if(observations[k].holdout) {
                 const auto& o=observations[k];
@@ -233,13 +243,23 @@ CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector
             result.rotation_error_after=raw_after/total;
             result.rotation_candidate=image_gain&&raw_after<before+total;
             set_correction(result.rotation_correction,rotation);
-            auto direct=image_pose;
-            const bool direct_gain=refine_image_pose(camera,observations,*photo,*render,mask,direct,6);
+            auto direct=image_pose;sfm::Pose direct_polish;
+            const bool direct_gain=refine_image_pose(camera,observations,*photo,*render,mask,direct,6,direct_polish);
             raw_after=0;
             for(const auto& o:observations)if(o.holdout)raw_after+=o.weight*std::min(20.0,error(camera,direct,o));
             result.direct_error_after=raw_after/total;
             result.direct_candidate=direct_gain&&raw_after<before+total;
             set_correction(result.direct_correction,direct);
+            auto polish=[&](CameraPolish& out,const sfm::Pose& coarse,const sfm::Pose& fine,bool candidate) {
+                double error_after=0;
+                for(const auto& o:observations)if(o.holdout)error_after+=o.weight*std::min(20.,error(camera,fine,o));
+                out.geometry_error=error_after/total;
+                out.candidate=candidate&&error_after<before+total&&(coarse.R!=fine.R||
+                    coarse.t.x!=fine.t.x||coarse.t.y!=fine.t.y||coarse.t.z!=fine.t.z);
+                set_correction(out.correction,fine);
+            };
+            polish(result.rotation_polish,rotation,rotation_polish,result.rotation_candidate);
+            polish(result.direct_polish,direct,direct_polish,result.direct_candidate);
         }
         Field grid;grid.width=width;grid.height=height;grid.spacing=settings.spacing;
         grid.columns=(width+grid.spacing-1)/grid.spacing+1;grid.rows=(height+grid.spacing-1)/grid.spacing+1;
