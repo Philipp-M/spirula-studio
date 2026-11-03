@@ -291,7 +291,7 @@ std::string diagnostics(const A::Field& f,const spirula::roma::PairPrediction& p
 }
 
 A::Audit previews(const nn::Image& corrected,const std::vector<uint8_t>& mask,const A::Coverage& coverage,
-                  const A::Field& field,const A::Image& photo,const A::Image& render,const fs::path& path) {
+                  const A::Field& field,const A::Image& photo,const A::Image& render,const fs::path& path,A::Audit* border=nullptr) {
     const bool save=!path.empty();
     const int w=field.width,h=field.height;auto preview=resized(corrected,w,h);
     nn::Image display,bad;display.width=bad.width=w;display.height=bad.height=h;
@@ -316,7 +316,15 @@ A::Audit previews(const nn::Image& corrected,const std::vector<uint8_t>& mask,co
     }
     if(save&&(!nn::save_image(display,(path/"corrected.png").string(),-1)||!nn::save_image(bad,(path/"ignored.png").string(),-1)||
        !nn::save_gray_png(coverage_preview.data(),w,h,(path/"coverage.png").string())))throw std::runtime_error("cannot save alignment previews");
-    return A::audit(photo,preview,render,audit_field);
+    const auto score=A::audit(photo,preview,render,audit_field);
+    if(border) {
+        auto& points=audit_field.audit;
+        points.erase(std::remove_if(points.begin(),points.end(),[&](auto p){
+            return p[0]>=.1f*w&&p[0]<=.9f*w&&p[1]>=.1f*h&&p[1]<=.9f*h;
+        }),points.end());
+        *border=A::audit(photo,preview,render,audit_field);
+    }
+    return score;
 }
 
 int run(const Options& o) {
@@ -378,7 +386,7 @@ int run(const Options& o) {
         for(int j=0;j<8;++j)identity<<ds.dist_coeffs[i*8+j]<<' ';identity<<'\n';
     }
     const auto render_key=identity.str();
-    identity<<"warp-version=2 precision="<<o.precision<<'\n';
+    identity<<"warp-version=3 precision="<<o.precision<<'\n';
     if(o.refine_cameras)identity<<"refine-cameras=1\n";
     if(o.residual_warp)identity<<"residual-warp=1\n";
     if(o.image_format=="jpeg")identity<<"image-format=jpeg jpeg-quality="<<o.jpeg_quality<<'\n';
@@ -396,7 +404,8 @@ int run(const Options& o) {
         const auto expected=render_key.substr(render_key.find('\n')+1);
         if(begin==std::string::npos||previous.substr(begin+1,end==std::string::npos?end:end-begin-1)!=expected)
             throw std::runtime_error("render reuse provenance differs: model, selection, cameras or rendering settings changed");
-        reuse_matches=previous.find("warp-version=2 precision="+o.precision+"\n")!=std::string::npos;
+        reuse_matches=previous.find("warp-version=2 precision="+o.precision+"\n")!=std::string::npos ||
+            previous.find("warp-version=3 precision="+o.precision+"\n")!=std::string::npos;
         if(o.keep_alignment_data)for(const auto& d:dirs)for(const char* name:{"render.bin","render.png"})
             if(!fs::exists(dest/d/name))fs::copy_file(o.reuse_renders/d/name,dest/d/name);
     }
@@ -688,7 +697,7 @@ int run(const Options& o) {
             const auto& alignment=input.alignment;const auto& initial_matches=input.initial_matches;
             auto corrected_pose=input.corrected_pose;
             const auto camera_audit_before=input.camera_audit_before,camera_audit_after=input.camera_audit_after;
-            auto field=A::fit(photo,cache.render,cache.depth,cache.opacity,matches,o.warp,working_mask);
+            auto field=A::fit(photo,cache.render,cache.depth,cache.opacity,matches,o.warp,working_mask,!o.refine_cameras||o.residual_warp);
             if(o.refine_cameras&&!o.residual_warp) {
                 A::use_identity(field);field.fallback=!alignment.accepted;
                 if(!working_mask.empty())field.valid=working_mask;
@@ -696,7 +705,23 @@ int run(const Options& o) {
             nn::Image corrected;corrected.width=original.width;corrected.height=original.height;
             std::vector<uint8_t> mask;A::Coverage coverage;
             A::resample(original.data,original.width,original.height,input_mask,field,corrected.data,mask,&coverage);
-            auto score=previews(corrected,mask,coverage,field,photo,cache.render,path);
+            A::Audit border;
+            auto score=previews(corrected,mask,coverage,field,photo,cache.render,path,&border);
+            const bool rejected=score.count<10||score.after<=score.before+.0001;
+            const bool border_regressed=border.count>=100&&border.after<border.before-.02;
+            if((!o.refine_cameras||o.residual_warp)&&field.structure_anchors>0&&(rejected||border_regressed)) {
+                auto conservative=A::fit(photo,cache.render,cache.depth,cache.opacity,matches,o.warp,working_mask,false);
+                nn::Image candidate_image;candidate_image.width=original.width;candidate_image.height=original.height;
+                std::vector<uint8_t> candidate_mask;A::Coverage candidate_coverage;
+                A::resample(original.data,original.width,original.height,input_mask,conservative,candidate_image.data,candidate_mask,&candidate_coverage);
+                const auto candidate_score=previews(candidate_image,candidate_mask,candidate_coverage,conservative,photo,cache.render,{});
+                const bool retained=conservative.fallback||candidate_score.count<10||candidate_score.after<=candidate_score.before+.0001;
+                if(rejected||(border_regressed&&retained)) {
+                    field=std::move(conservative);field.structure_fallback=true;
+                    corrected=std::move(candidate_image);mask=std::move(candidate_mask);coverage=std::move(candidate_coverage);
+                    score=previews(corrected,mask,coverage,field,photo,cache.render,path);
+                }
+            }
             const auto candidate=score;std::string fallback=o.refine_cameras&&!o.residual_warp?(alignment.accepted?"":A::camera_fit_status(alignment.status)):
                 field.fallback?(field.anchors<12?"insufficient_matching_support":"unresolved_deformation"):"";
             if((!o.refine_cameras||o.residual_warp)&&fallback.empty()&&(score.count<10||score.after<=score.before+.0001))fallback="no_measured_alignment_improvement";
@@ -726,6 +751,7 @@ int run(const Options& o) {
             const size_t count=coverage.covered-coverage.masked;
             if(count!=(size_t)std::count(mask.begin(),mask.end(),uint8_t(255)))throw std::runtime_error("coverage accounting differs from training mask");
             record<<",\"preview_available\":"<<(o.review?"true":"false")<<",\"width\":"<<corrected.width<<",\"height\":"<<corrected.height<<",\"anchors\":"<<field.anchors
+                <<",\"structure_anchors\":"<<field.structure_anchors<<",\"structure_fallback\":"<<(field.structure_fallback?"true":"false")
                 <<",\"valid_fraction\":"<<(double)count/mask.size()<<",\"coverage_fraction\":"<<(double)coverage.covered/coverage.pixels
                 <<",\"source_mask_loss_fraction\":"<<(double)coverage.masked/coverage.pixels<<",\"coverage_loss_pixels\":"<<coverage.pixels-coverage.covered
                 <<",\"source_mask_loss_pixels\":"<<coverage.masked<<",\"confidence_loss_pixels\":0,\"correction_scale\":"<<field.correction_scale

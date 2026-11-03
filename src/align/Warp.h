@@ -60,7 +60,8 @@ struct Field {
     std::vector<Triangle> triangles;
     std::vector<std::vector<uint32_t>> bins;
     MatchDiagnostics diagnostics;
-    size_t anchors = 0;
+    size_t anchors = 0, structure_anchors = 0;
+    bool structure_fallback = false;
     float correction_scale = 1;
     bool fallback = false;
     bool source(float x, float y, float& sx, float& sy, bool allow_outside = false) const;
@@ -97,7 +98,8 @@ struct Coverage {
 
 Field fit(const Image& photo, const Image& render, const std::vector<float>& depth,
           const std::vector<float>& opacity, const roma::PairPrediction& matches,
-          const Settings& settings, const std::vector<uint8_t>& source_mask = {});
+          const Settings& settings, const std::vector<uint8_t>& source_mask = {},
+          bool refine_structure = true);
 CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector<float>& opacity,
                               const roma::PairPrediction& matches, const Settings& settings,
                               const camhost::Camera& camera, const std::vector<uint8_t>& source_mask = {},

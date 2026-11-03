@@ -9,9 +9,17 @@ constexpr int bands = 5, row_size = 1+8*bands;
 using Row = std::array<float,row_size>;
 constexpr std::array<std::array<int,2>,4> directions{{{1,0},{0,1},{1,1},{1,-1}}};
 
-std::vector<std::array<float,4>> edge_tangents(const Field& f, const std::vector<float>& photo,
-                                            const std::vector<uint8_t>& mask) {
-    std::vector<std::array<float,4>> result(f.displacement.size());
+struct EdgeConstraints {
+    std::vector<std::array<float,4>> bending, extrapolation;
+};
+
+EdgeConstraints edge_tangents(const Field& f, const std::vector<float>& photo,
+                                            const std::vector<uint8_t>& mask, const std::vector<std::array<float,4>>& structure) {
+    EdgeConstraints result;result.bending.resize(f.displacement.size());result.extrapolation.resize(f.displacement.size());
+    std::vector<uint8_t> active(f.displacement.size());
+    for (int y = 0; y < f.rows; ++y) for (int x = 0; x < f.columns; ++x) if (structure[(size_t)y*f.columns+x][3] > 0)
+        for (int j = std::max(0,y-8); j <= std::min(f.rows-1,y+8); ++j)
+            for (int i = std::max(0,x-8); i <= std::min(f.columns-1,x+8); ++i) active[(size_t)j*f.columns+i] = 1;
 #pragma omp parallel for schedule(static)
     for (int gy = 0; gy < f.rows; ++gy) for (int gx = 0; gx < f.columns; ++gx) {
         const int x = std::min(gx*f.spacing, f.width-1), y = std::min(gy*f.spacing, f.height-1);
@@ -30,8 +38,29 @@ std::vector<std::array<float,4>> edge_tangents(const Field& f, const std::vector
         for (int d = 0; d < 4; ++d) {
             const auto v = directions[d];
             const float along = (v[0]*v[0]*xx+2*v[0]*v[1]*xy+v[1]*v[1]*yy)/(trace*(v[0]*v[0]+v[1]*v[1]));
-            result[(size_t)gy*f.columns+gx][d] = confidence*std::clamp(1-5*along,0.0f,1.0f);
+            result.bending[(size_t)gy*f.columns+gx][d] = confidence*std::clamp(1-5*along,0.0f,1.0f);
         }
+        if (!active[(size_t)gy*f.columns+gx]) continue;
+        for (int cy = std::max(3,y-f.spacing); cy <= std::min(f.height-4,y+f.spacing); cy += 2)
+            for (int cx = std::max(3,x-f.spacing); cx <= std::min(f.width-4,x+f.spacing); cx += 2) {
+                float xx = 0,xy = 0,yy = 0; int count = 0;
+                for (int j = cy-2; j <= cy+2; ++j) for (int i = cx-2; i <= cx+2; ++i) {
+                    const size_t k = (size_t)j*f.width+i;
+                    if (!mask.empty() && (!mask[k] || !mask[k-1] || !mask[k+1] || !mask[k-f.width] || !mask[k+f.width])) continue;
+                    const float dx = .5f*(photo[k+1]-photo[k-1]),dy = .5f*(photo[k+f.width]-photo[k-f.width]);
+                    xx += dx*dx;xy += dx*dy;yy += dy*dy;++count;
+                }
+                const float trace = xx+yy;
+                if (count < 20 || trace < 1e-8f) continue;
+                const float coherence = std::hypot(xx-yy,2*xy)/trace;
+                const float confidence = std::clamp((coherence-.85f)/.15f,0.f,1.f)*std::clamp((trace/count-.001f)/.003f,0.f,1.f);
+                for (int d = 0; d < 4; ++d) {
+                    const auto v = directions[d];
+                    const float along = (v[0]*v[0]*xx+2*v[0]*v[1]*xy+v[1]*v[1]*yy)/(trace*(v[0]*v[0]+v[1]*v[1]));
+                    auto& edge = result.extrapolation[(size_t)gy*f.columns+gx][d];
+                    edge = std::max(edge,confidence*std::clamp(1-5*along,0.f,1.f));
+                }
+            }
     }
     return result;
 }
@@ -65,10 +94,10 @@ std::vector<float> depth_support(const Field& f, const std::vector<float>& weigh
 
 void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>& weights,
                 const std::vector<float>& support, const std::vector<float>& photo,
-                const std::vector<uint8_t>& mask) {
+                const std::vector<uint8_t>& mask, const std::vector<std::array<float,4>>& structure) {
     const size_t n = data.size();
     const auto broad = f.displacement;
-    const auto edges = edge_tangents(f, photo, mask);
+    const auto edges = edge_tangents(f, photo, mask, structure);
     std::vector<Row> matrix(n);
     std::array<int,row_size> offsets{};
     auto coupling = [&](size_t a, size_t b) {
@@ -86,7 +115,9 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
             const int bx = x+v[0], by = y+v[1];
             if (bx < 0 || bx >= f.columns || by < 0 || by >= f.rows) continue;
             const size_t k = (size_t)y*f.columns+x, b = (size_t)by*f.columns+bx;
-            const float pair = .35f*coupling(k,b)/(v[0]*v[0]+v[1]*v[1]);
+            const float weak = std::clamp(1-std::min(weights[k],weights[b])/.1f,0.f,1.f);
+            const float ridge = std::min(edges.extrapolation[k][d],edges.extrapolation[b][d]);
+            const float pair = (.35f*coupling(k,b)+8*weak*ridge)/(v[0]*v[0]+v[1]*v[1]);
             matrix[k][0] += pair; matrix[b][0] += pair;
             matrix[k][slot+1] -= pair; matrix[b][slot] -= pair;
             for (int band = 0; band < bands-1; ++band) {
@@ -96,10 +127,10 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
                     cx < 0 || cx >= f.columns || cy < 0 || cy >= f.rows) continue;
                 const size_t a = (size_t)ay*f.columns+ax, c = (size_t)cy*f.columns+cx;
                 // Long stencils require a continuous photographic ridge, not just aligned endpoints.
-                float tangent = edges[k][d];
+                float tangent = edges.bending[k][d];
                 for (int t = -step; t <= step; ++t) {
                     const size_t q = (size_t)((ptrdiff_t)k+t*offset);
-                    tangent = std::min(tangent,edges[q][d]);
+                    tangent = std::min(tangent,edges.bending[q][d]);
                 }
                 const float base = band == 0 ? 4*std::min(coupling(a,k),coupling(k,c)) : 0;
                 const float bend = (base+16*tangent)/(v[0]*v[0]+v[1]*v[1]);
@@ -121,7 +152,9 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
     auto apply = [&](const std::vector<Vec>& input, std::vector<Vec>& output) {
 #pragma omp parallel for schedule(static)
         for (size_t k = 0; k < n; ++k) {
-            for (int c = 0; c < 2; ++c) output[k][c] = (matrix[k][0]+diagonal[k])*input[k][c];
+            const auto& a = structure[k];
+            const float normal = a[3]*(a[0]*input[k][0]+a[1]*input[k][1]);
+            for (int c = 0; c < 2; ++c) output[k][c] = (matrix[k][0]+diagonal[k])*input[k][c]+normal*a[c];
             for (int j = 1; j < row_size; ++j) if (matrix[k][j] != 0) {
                 const size_t q = (size_t)((ptrdiff_t)k+offsets[j]);
                 for (int c = 0; c < 2; ++c) output[k][c] += matrix[k][j]*input[q][c];
@@ -135,13 +168,14 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
             const float weight = weights[k]*(robust == 0 ? 1.0f : std::min(1.0f,1.5f/std::max(.001f,error)));
             diagonal[k] = .003f+weight;
             for (int c = 0; c < 2; ++c)
-                rhs[k][c] = weight*(data[k][c]-broad[k][c]);
+                rhs[k][c] = weight*(data[k][c]-broad[k][c])+structure[k][3]*structure[k][c]*
+                    (structure[k][2]-structure[k][0]*broad[k][0]-structure[k][1]*broad[k][1]);
         }
         apply(value,product);
 #pragma omp parallel for schedule(static)
         for (size_t k = 0; k < n; ++k) for (int c = 0; c < 2; ++c) {
             residual[k][c] = rhs[k][c]-product[k][c];
-            preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]);
+            preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]);
         }
         direction = preconditioned;
         double rz = dot(residual,preconditioned);
@@ -155,7 +189,7 @@ void regularize(Field& f, const std::vector<Vec>& data, const std::vector<float>
             for (size_t k = 0; k < n; ++k) for (int c = 0; c < 2; ++c) {
                 value[k][c] += alpha*direction[k][c];
                 residual[k][c] -= alpha*product[k][c];
-                preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]);
+                preconditioned[k][c] = residual[k][c]/(matrix[k][0]+diagonal[k]+structure[k][3]);
             }
             const double next = dot(residual,preconditioned);
             const float beta = (float)(next/rz); rz = next;

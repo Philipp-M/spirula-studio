@@ -244,6 +244,36 @@ over spans of 2, 4, 8 and 16 grid intervals. Long constraints require continuous
 edge evidence across the span; incoherent texture and corners weaken this
 constraint. These are soft constraints, not a guarantee of exact straightness.
 Weakly matched areas inherit movement instead of becoming unsupported holes.
+
+Thin foreground edges also supply independent normal-direction matches. The
+source and render are low-pass filtered before comparing signed gradient profiles
+across each coherent source edge. A smaller tensor window locates thin ridges
+inside a mesh cell when the larger window is dominated by background texture.
+A search within 16 working pixels of RoMa needs
+profile agreement above 0.65, a distinct peak separated by 0.15 from alternatives,
+and a reverse match within one pixel. Positive foreground depth with at least
+half rendered coverage must be available near the matched edge; its surroundings
+must be substantially farther
+away or lack depth. Missing background depth does not invalidate a visible
+foreground edge. Source masks cover the complete profile footprint. Nearby
+parallel matches must agree, and a local median rejects small groups that lock
+onto a neighboring parallel part.
+
+These correspondences constrain only displacement perpendicular to the edge in
+the existing mesh solver. They do not infer motion along a featureless line or
+increase global smoothing. Near accepted foreground constraints, fine-scale
+source ridges propagate motion along poorly matched extensions, so an unsupported
+tip does not bend toward background motion. Reliable correspondence regions keep
+the original regularization. Existing deformation limits, one-pass native sampling
+and reserved-patch acceptance still apply. This is a local image alignment cue,
+not a physical lens calibration; camera intrinsics remain unchanged. If these
+additional constraints cause unresolved deformation or fail the image audit, the
+same fitter retries with the original RoMa constraints before retaining a source
+photograph. A structural fit also cannot promote a previously rejected warp when
+the outer 10% of the image loses more than 0.02 NCC over at least 100 audit patches.
+This promotion check preserves a conservative fallback in poorly rendered views;
+it does not veto an already usable RoMa correction or a validated camera pose.
+Both candidates sample the original pixels; resampling is not chained.
 `--min-overlap` and `--min-correlation` control soft weighting, `--max-cycle`
 controls cycle weighting, and `--max-displacement` excludes implausible anchors.
 Its default, `0`, resolves to 5% of the working image diagonal. A positive value

@@ -11,9 +11,14 @@ inline float displacement_limit(const Settings& settings, int width, int height)
 }
 
 std::vector<float> depth_support(const Field& field, const std::vector<float>& weights);
+// Entries hold unit normal x/y, normal displacement in working pixels, and weight.
+std::vector<std::array<float,4>> structure_matches(const Field& field,const std::vector<float>& photo,
+    const std::vector<float>& render,const std::vector<float>& depth,const std::vector<float>& opacity,
+    const roma::PairPrediction& matches,const Settings& settings,const std::vector<uint8_t>& mask);
 void regularize(Field& field, const std::vector<std::array<float,2>>& data,
                 const std::vector<float>& weights, const std::vector<float>& support,
-                const std::vector<float>& photo, const std::vector<uint8_t>& mask);
+                const std::vector<float>& photo, const std::vector<uint8_t>& mask,
+                const std::vector<std::array<float,4>>& structure);
 
 inline bool sample(const std::vector<float>& v, int w, int h, int c, float x, float y, float* out) {
     if (!std::isfinite(x) || !std::isfinite(y) || x<0 || y<0 || x>w-1 || y>h-1 ||

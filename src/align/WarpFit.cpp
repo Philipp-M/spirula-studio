@@ -196,7 +196,7 @@ void choose_strength(Field& f,const std::vector<float>& photo,const std::vector<
 }  // namespace
 
 Field fit(const Image& photo,const Image& render,const std::vector<float>& depth,
-          const std::vector<float>& opacity,const roma::PairPrediction& matches,const Settings& s,const std::vector<uint8_t>& source_mask) {
+          const std::vector<float>& opacity,const roma::PairPrediction& matches,const Settings& s,const std::vector<uint8_t>& source_mask,bool refine_structure) {
     const int w=render.width,h=render.height;
     if(w<16||h<16||photo.width!=w||photo.height!=h||depth.size()!=(size_t)w*h||opacity.size()!=depth.size()||
        photo.rgb.size()!=depth.size()*3||render.rgb.size()!=photo.rgb.size()||s.spacing<4||s.patch_radius<1||
@@ -260,7 +260,10 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     f.fallback=f.anchors<12;
     const auto broad=broad_field(data,weights,f);f.displacement=broad;
     const auto support=detail::depth_support(f,weights);
-    detail::regularize(f,data,weights,support,pg,source_mask);
+    const auto structure=refine_structure?detail::structure_matches(f,pg,rg,depth,opacity,matches,s,source_mask):
+        std::vector<std::array<float,4>>(n);
+    f.structure_anchors=std::count_if(structure.begin(),structure.end(),[](const auto& a){return a[3]>0;});
+    detail::regularize(f,data,weights,support,pg,source_mask,structure);
     auto labels=surfaces(f,support);
     const auto fitted=f.displacement;std::vector<float> strength(n,1);
     auto safety_weights=weights;for(float& v:safety_weights)v+=.001f;
@@ -298,6 +301,10 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
         strength.swap(smooth);f.correction_scale=*std::min_element(strength.begin(),strength.end());
         for(size_t k=0;k<n;++k)for(int c=0;c<2;++c)f.displacement[k][c]=safe_base[k][c]+(fitted[k][c]-safe_base[k][c])*strength[k];
         if(attempt==31)f.fallback=true;
+    }
+    if(f.fallback&&f.structure_anchors>0) {
+        auto conservative=fit(photo,render,depth,opacity,matches,s,source_mask,false);
+        conservative.structure_fallback=true;return conservative;
     }
     if(f.fallback) {
         f.correction_scale=0;std::fill(f.displacement.begin(),f.displacement.end(),Vec{});std::fill(labels.begin(),labels.end(),0);mesh(f,labels);
