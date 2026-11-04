@@ -53,6 +53,9 @@ the output directory. Diagnostic and test data are not deliverables by default.
 - Check output contents and storage growth when validating a batch workflow.
   Verify that disabling diagnostics preserves the final result. SSD writes and
   disk usage are design constraints, not costs to discover after a full run.
+- Benchmark the default camera-plus-residual path, including CPU camera fitting.
+  Overlapping image export alone is not a complete alignment pipeline. Compare
+  serial and pipelined output at the same precision and matching resolution.
 - Remove task-owned scratch when no longer needed. Keep source data and final
   outputs separate from scratch cleanup.
 - Training-photo alignment is judged against the reference splat. An unavailable

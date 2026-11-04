@@ -138,10 +138,21 @@ inline void residualPair(const Pose& p, const Vec3& X, const Vec3& bi, double s,
 // central-difference Jacobian: `resid(pose, s, j, r)` fills the two residual
 // components of correspondence j of n, 1e3 marking a cheirality failure.
 template <class Resid>
-bool lmRefine(int n, const Resid& resid, int NP, Pose& pose, double& s0, int max_iters) {
+bool lmRefine(int n, const Resid& resid, int NP, Pose& pose, double& s0, int max_iters, bool parallel = false) {
+    std::vector<std::array<double,56>> equations(parallel ? n : 0);
+    std::vector<double> costs(parallel ? n : 0);
     auto cost = [&](const Pose& p, double s) {
-        double c = 0, r[2];
-        for (int i = 0; i < n; i++) { resid(p, s, i, r); c += r[0] * r[0] + r[1] * r[1]; }
+        double c = 0;
+        if (parallel) {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n; i++) {
+                double r[2];resid(p, s, i, r);costs[i]=r[0]*r[0]+r[1]*r[1];
+            }
+            for (double value : costs) c += value;
+        } else {
+            double r[2];
+            for (int i = 0; i < n; i++) { resid(p, s, i, r); c += r[0] * r[0] + r[1] * r[1]; }
+        }
         return c;
     };
     // Compose a step onto a base state: R <- exp(w) R0, t <- t0 + dt,
@@ -156,29 +167,42 @@ bool lmRefine(int n, const Resid& resid, int NP, Pose& pose, double& s0, int max
 
     double lambda = 1e-4, c0 = cost(pose, s0);
     for (int it = 0; it < max_iters; it++) {
-        // J^T J and J^T r accumulated point by point (numeric Jacobian).
         double JtJ[49] = {0}, Jtr[7] = {0};
         const double h = 1e-6;
-        for (int i = 0; i < n; i++) {
+        std::array<Pose,7> plus,minus;
+        std::array<double,7> plus_scale{},minus_scale{};
+        for (int k = 0; k < NP; k++) {
+            double delta[7] = {};
+            delta[k]=h;plus[k]=stepP(pose,delta);plus_scale[k]=stepS(s0,delta);
+            delta[k]=-h;minus[k]=stepP(pose,delta);minus_scale[k]=stepS(s0,delta);
+        }
+        auto accumulate = [&](int i,double* matrix,double* rhs) {
             double J[2][7], rp[2], rm[2], r0[2];
             resid(pose, s0, i, r0);
-            if (r0[0] >= 1e3) continue;
+            if (r0[0] >= 1e3) return;
             for (int k = 0; k < NP; k++) {
-                double d[7] = {0, 0, 0, 0, 0, 0, 0};
-                d[k] = h;
-                resid(stepP(pose, d), stepS(s0, d), i, rp);
-                d[k] = -h;
-                resid(stepP(pose, d), stepS(s0, d), i, rm);
+                resid(plus[k], plus_scale[k], i, rp);
+                resid(minus[k], minus_scale[k], i, rm);
                 J[0][k] = (rp[0] - rm[0]) / (2 * h);
                 J[1][k] = (rp[1] - rm[1]) / (2 * h);
             }
             for (int a = 0; a < NP; a++) {
                 for (int c = 0; c < NP; c++)
-                    JtJ[NP * a + c] += J[0][a] * J[0][c] + J[1][a] * J[1][c];
-                Jtr[a] += J[0][a] * r0[0] + J[1][a] * r0[1];
+                    matrix[NP * a + c] += J[0][a] * J[0][c] + J[1][a] * J[1][c];
+                rhs[a] += J[0][a] * r0[0] + J[1][a] * r0[1];
             }
-        }
-        // (JtJ + lambda diag) d = -Jtr, solved by Gaussian elimination.
+        };
+        if (parallel) {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n; i++) {
+                equations[i].fill(0);accumulate(i,equations[i].data(),equations[i].data()+49);
+            }
+            // Ordered accumulation keeps camera decisions independent of worker count.
+            for (const auto& equation : equations) {
+                for (int i = 0; i < NP*NP; i++) JtJ[i] += equation[i];
+                for (int i = 0; i < NP; i++) Jtr[i] += equation[49+i];
+            }
+        } else for (int i = 0; i < n; i++) accumulate(i,JtJ,Jtr);
         double A[49], g[7], d[7];
         bool solved = false;
         for (int tries = 0; tries < 8 && !solved; tries++) {

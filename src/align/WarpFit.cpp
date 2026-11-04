@@ -207,7 +207,7 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     const float max_displacement=detail::displacement_limit(s,w,h);
     f.columns=(w+s.spacing-1)/s.spacing+1;f.rows=(h+s.spacing-1)/s.spacing+1;
     const size_t n=(size_t)f.columns*f.rows;f.displacement.resize(n);f.depth.resize(n);f.support.resize(n);
-    f.diagnostics=diagnose(photo,render,depth,opacity,matches,s);
+    if(s.diagnostics)f.diagnostics=diagnose(photo,render,depth,opacity,matches,s);
     std::vector<float> weights(n),precision(n,1);std::vector<Vec> data(n);const auto rg=detail::gray(render),pg=detail::gray(photo);
     if(!matches.backward.precision.empty()) {
         std::vector<float> measured;
@@ -258,12 +258,20 @@ Field fit(const Image& photo,const Image& render,const std::vector<float>& depth
     }
     for(float weight:weights)f.anchors+=weight>.05f;
     f.fallback=f.anchors<12;
+    if(f.fallback) {
+        mesh(f,std::vector<uint32_t>(n));index_field(f);f.correction_scale=0;f.valid.assign((size_t)w*h,255);
+        for(int y=16;y<h-16;y+=40)for(int x=16;x<w-16;x+=40)
+            if(detail::correlation(rg,pg,w,h,x,y,x,y,3)>-1)f.audit.push_back({(float)x,(float)y});
+        return f;
+    }
     const auto broad=broad_field(data,weights,f);f.displacement=broad;
     const auto support=detail::depth_support(f,weights);
     const auto structure=refine_structure?detail::structure_matches(f,pg,rg,depth,opacity,matches,s,source_mask):
         std::vector<std::array<float,4>>(n);
     f.structure_anchors=std::count_if(structure.begin(),structure.end(),[](const auto& a){return a[3]>0;});
     const auto residual_base=s.camera_residual?detail::smooth_residual(f,data,weights,structure):std::vector<Vec>{};
+    if(s.camera_residual)f.smooth_displacement=f.structure_anchors?
+        detail::smooth_residual(f,data,weights,std::vector<std::array<float,4>>(n)):residual_base;
     if(s.camera_residual)f.displacement=residual_base;
     detail::regularize(f,data,weights,support,pg,source_mask,structure,refine_structure);
     if(s.camera_residual)detail::limit_residual(f,residual_base);

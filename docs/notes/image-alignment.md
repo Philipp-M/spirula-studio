@@ -47,16 +47,49 @@ page or extra original photographs are generated. `--warp-only` writes just
 images and masks; that mode uses the original dataset's camera alignment and
 point cloud for training.
 
-The default pipeline prefetches one input and overlaps CPU fitting, native
-resampling, quality checks and encoding with the next view's GPU rendering and
-matching. Only one view uses the GPU at a time; renderer and matcher allocations
-remain separate. One CPU output job and one prefetched input bound the queue in
-RAM independently of dataset size, with no temporary render or matching spool
-on disk. The CPU output worker uses the OpenMP thread budget minus two (minimum
-one), leaving room for input preparation and GPU submission. Set
-`OMP_NUM_THREADS` to control that budget. `--no-pipeline` restores serial
-execution and reduces peak host memory. It does not change correction settings
-or retained output files.
+The default pipeline keeps two photo/camera jobs in flight and exports one
+completed image at a time, in dataset order. A dedicated GPU thread serializes
+rendering and matching while the photo workers fit and audit cameras on the CPU.
+CPU camera work can therefore overlap GPU work for another view. Renderer and
+matcher allocations remain separate; matching weights survive consecutive matching
+jobs until a render needs their memory. Final matching is deferred past the micro
+camera step when no intermediate stage needs it. Photometric pose fitting evaluates
+independent residuals and Jacobians in parallel, then accumulates in observation
+order; thread count does not change the reduction order. Perturbed trial cameras
+are computed once per optimizer iteration.
+
+The queue holds at most two processing views and one output view, independent of
+dataset size, without a temporary disk spool. Half the OpenMP thread budget goes to output fitting and resampling; the
+remaining half is divided between the two photo workers (minimum one each). `OMP_NUM_THREADS` controls that budget. `--no-pipeline` processes
+one view at a time and reduces host memory without changing correction settings.
+`--precision auto` is the default: FP32 for pose-sensitive camera matches,
+then mixed weight arithmetic on compatible cooperative-matrix devices for a fresh
+final residual pass (FP32 otherwise). Explicit `--precision float32` or `mixed`
+uses that arithmetic for every match. Full working-resolution FP32 camera evidence
+preserves the prior camera solution; lighter final residual matching cannot alter it. Camera matching retains the full working grid. The default `--match-resolution
+1280` caps a fresh final residual matching pass after the camera is fixed. Existing
+full-resolution camera matches are reused when still valid. Direct patch refinement
+and validation use the working image resolution, and exported photos retain their
+native size. `--match-resolution 0` also uses the full working grid for that final
+residual pass. Explicit metrics include render/match counts and elapsed GPU-job, CPU-camera and
+CPU-output durations. GPU-job timings include host submission and transfers, not
+just device execution; overlapped stage durations must not be added as batch time.
+
+A 2026-11-04 production check on eight difficult antenna views took 175.99 seconds
+with MIP, a 2560-pixel working resolution, native JPEG quality 95 and eight CPU
+threads while another training job ran on the RTX 3090. All eight received residual
+corrections; the preceding policy retained source pixels in seven. The final
+39-view check exported every photo, selected 37 residual corrections, and preserved
+all prior camera poses and rendered previews exactly. Production and review output
+matched byte-for-byte on the eight overlapping views. Small exported photometric
+tradeoffs remain visible in the review; these checks do not prove perfect geometry.
+
+On the same three independent CinqueTorri samples, with matching flags and metrics
+enabled in both runs, elapsed time was 129.52 seconds before and 119.19 seconds after.
+All three corrected successfully and retained identical camera poses and world data.
+These are single contended runs, including startup and metadata export; neither is
+a full-dataset throughput forecast. Review generation adds image encoding and audits
+that production omits.
 
 In image-only mode (`--warp-only`), on three seeded CinqueTorri views with 1280-pixel working resolution, native JPEG
 quality 95 output, eight OpenMP threads and an RTX 3090, elapsed time was 40.24 s
@@ -303,20 +336,37 @@ also retain it. Larger interior matching errors remain visible instead of being
 hidden with arbitrary local deformation. Image agreement can therefore be lower
 than an unconstrained warp while source geometry is better preserved.
 
-The resampled residual image must also preserve depth-weighted foreground patch
-agreement (at least 32 patches, at most 0.001 NCC loss). This check is independent
-of the whole-image improvement test: a better background cannot authorize a worse
-foreground. Held-out source-line patches have a separate non-regression check
-(at least 12 patches, the same 0.001 tolerance), so nearby foliage cannot conceal
-movement of an already aligned structural edge. Source-line detection is shared
-with the bending constraints, and its audit locations are prepared once per photo.
-The conservative retry uses the same checks. If both fail, source pixels
-are retained with any accepted camera correction. Review metrics include
-`foreground_count`, `foreground_before`, `foreground_after` and the corresponding
-`structure_*` fields; candidate gains remain available when a warp is rejected.
+Residual selection compares held-out patches directly through the candidate
+pull map, using Lanczos sampling. Its objective includes whole-image,
+median-depth-weighted foreground, and source-line agreement. Each supported group
+has a 0.001 NCC loss tolerance; foreground requires 32 patches and lines require
+12. Source-line detection is shared with the bending constraints and prepared once
+per photo. These are appearance measurements, not geometric ground truth.
+
+A useful dense correction is kept. Otherwise the selector tries half and quarter
+strength and the smooth lens/affine model without extra edge constraints. When
+the smooth model wins, one conservative CPU fit can restore useful bounded local
+corrections; it must improve the same sparse objective. If these candidates
+cannot provide a supported improvement, small direct image matches within three
+working pixels fit a robust smooth correction. This recovery does not need another
+render or neural inference and is also attempted when RoMa support is insufficient.
+It does not introduce another unrestricted local warp. Only the selected field
+resamples the native photograph. Exported-image audits are reported separately;
+resizing and JPEG quantization can differ from the sparse selection estimate.
+
+The original pixels are retained only when none of those candidates provides a
+supported improvement, or processing fails; an independently accepted camera stays
+in the output. An already aligned or entirely masked photo receives no invented
+motion. `residual_model` in explicit metrics identifies the dense field (1), smooth
+model (2), direct image recovery (3), or identity (0). `foreground_*` and
+`structure_*` report agreement of the actual saved image. Detailed legacy match
+counters are computed only for explicit `--review` or `--metrics` runs. Full exported-image
+audits run only with `--review` or `--metrics`; production selection uses the same
+sparse patch tests and writes the same selected correction.
 
 `--warp-only` retains the separate free-form image-registration mode for input
-cameras that have not undergone this refinement. No new option is needed for
+cameras that have not undergone this refinement. Its matching defaults remain
+FP32 and the full working grid unless explicitly overridden. No new option is needed for
 the bounded policy in the default camera-first pipeline. Processing remains
 per-image in RAM; the small linear fit adds no inference or rendering pass.
 

@@ -21,6 +21,7 @@ struct Settings {
     float min_overlap = 0.7f, max_cycle = 1.5f, max_displacement = 0.0f;
     float min_correlation = 0.75f, depth_jump = 0.04f;
     bool camera_residual = false;
+    bool diagnostics = false;
 };
 
 struct MatchDiagnostics {
@@ -71,6 +72,7 @@ struct Field {
     int width = 0, height = 0, columns = 0, rows = 0, spacing = 0;
     float depth_jump = .04f;
     std::vector<std::array<float, 2>> displacement;
+    std::vector<std::array<float, 2>> smooth_displacement;
     std::vector<float> depth, support;
     std::vector<uint8_t> valid;
     std::vector<std::array<float, 2>> audit;
@@ -81,6 +83,8 @@ struct Field {
     bool structure_fallback = false;
     float correction_scale = 1;
     bool fallback = false;
+    int residual_model = 0;
+    double residual_gain = 0;
     bool source(float x, float y, float& sx, float& sy, bool allow_outside = false) const;
 };
 
@@ -131,6 +135,9 @@ Field fit(const Image& photo, const Image& render, const std::vector<float>& dep
           const std::vector<float>& opacity, const roma::PairPrediction& matches,
           const Settings& settings, const std::vector<uint8_t>& source_mask = {},
           bool refine_structure = true);
+void select_residual(Field& field,const Image& photo,const Image& render,
+                     const std::vector<float>& depth,const std::vector<float>& opacity,
+                     const std::vector<uint8_t>& mask,const std::vector<std::array<float,2>>& structures);
 CameraAlignment refine_camera(const std::vector<float>& depth, const std::vector<float>& opacity,
                               const roma::PairPrediction& matches, const Settings& settings,
                               const camhost::Camera& camera, const std::vector<uint8_t>& source_mask = {},

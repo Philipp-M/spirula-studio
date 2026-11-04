@@ -49,7 +49,7 @@ CameraPolish polish_camera(const Image& photo,const Image& render,const std::vec
     auto residual=[&](const sfm::Pose& p,double,int j,double* r) {
         const int k=training[j];r[0]=std::sqrt(std::max(1e-8f,1-score(p,k))*patches[k].weight);r[1]=0;
     };
-    sfm::pose_detail::lmRefine((int)training.size(),residual,6,pose,focal,10);
+    sfm::pose_detail::lmRefine((int)training.size(),residual,6,pose,focal,10,true);
     double gain=0,total=0,movement=0;
     for(int j:held) {
         gain+=patches[j].weight*(score(pose,j)-score(sfm::Pose{},j));total+=patches[j].weight;

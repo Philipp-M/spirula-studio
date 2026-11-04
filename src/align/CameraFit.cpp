@@ -127,7 +127,7 @@ bool refine_image_pose(const camhost::Camera& camera,std::vector<Observation> ob
         auto cost=[&](const sfm::Pose& p){double sum=0,r[2];for(size_t j=0;j<train.size();++j){residual(p,1,(int)j,r);sum+=r[0]*r[0];}return sum;};
         if(scale==4&&cost(sfm::Pose{})<cost(pose))pose=sfm::Pose{};
         const auto previous=pose;double focal=1;
-        sfm::pose_detail::lmRefine((int)train.size(),residual,dof,pose,focal,12);
+        sfm::pose_detail::lmRefine((int)train.size(),residual,dof,pose,focal,12,true);
         double improvement=0,unweighted=0,total_weight=0;
         for(int j:validation) {
             const double delta=std::max(-1.0f,correlation(pose,j))-std::max(-1.0f,correlation(previous,j));

@@ -51,10 +51,18 @@ inline std::vector<float> gray(const Image& a) {
 }
 inline float correlation(const std::vector<float>& a,const std::vector<float>& b,int w,int h,
                          float x,float y,float qx,float qy,int r) {
+    if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(qx)||!std::isfinite(qy)||
+       x-r<0||y-r<0||qx-r<0||qy-r<0||x+r>w-1||y+r>h-1||qx+r>w-1||qy+r>h-1||
+       a.size()!=(size_t)w*h||b.size()!=a.size())return -2;
     double sa=0,sb=0,aa=0,bb=0,ab=0;
+    auto at=[&](const std::vector<float>& image,float xx,float yy) {
+        const int ix=(int)xx,iy=(int)yy,jx=std::min(ix+1,w-1),jy=std::min(iy+1,h-1);
+        const float ax=xx-ix,ay=yy-iy;
+        return (1-ay)*((1-ax)*image[(size_t)iy*w+ix]+ax*image[(size_t)iy*w+jx])+
+            ay*((1-ax)*image[(size_t)jy*w+ix]+ax*image[(size_t)jy*w+jx]);
+    };
     for(int j=-r;j<=r;++j)for(int i=-r;i<=r;++i) {
-        float u,v;
-        if(!sample(a,w,h,1,x+i,y+j,&u)||!sample(b,w,h,1,qx+i,qy+j,&v))return -2;
+        const float u=at(a,x+i,y+j),v=at(b,qx+i,qy+j);
         sa+=u;sb+=v;aa+=u*u;bb+=v*v;ab+=u*v;
     }
     const double n=(2*r+1)*(2*r+1),va=aa-sa*sa/n,vb=bb-sb*sb/n;

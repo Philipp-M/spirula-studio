@@ -6,6 +6,21 @@
 #include <stdexcept>
 
 namespace spirula::align {
+namespace {
+void lanczos_weights(double fraction,double* weights) {
+    constexpr int resolution=4096;
+    static const auto table=[] {
+        std::array<std::array<double,6>,resolution+1> values{};
+        for(int j=0;j<=resolution;++j)for(int i=0;i<6;++i)
+            values[j][i]=lanczos_detail::kernel((double)j/resolution+2-i);
+        return values;
+    }();
+    const double coordinate=fraction*resolution;
+    const int index=std::clamp((int)coordinate,0,resolution-1);
+    const double alpha=coordinate-index;
+    for(int i=0;i<6;++i)weights[i]=(1-alpha)*table[index][i]+alpha*table[index+1][i];
+}
+}
 
 void use_identity(Field& f) {
     for(auto& t:f.triangles)t.target=t.source;
@@ -65,6 +80,17 @@ void resample(const std::vector<uint8_t>& original,int w,int h,const std::vector
         throw std::runtime_error("invalid native image or mask");
     corrected.assign(original.size(),0);mask.assign((size_t)w*h,0);
     if(coverage){*coverage={};coverage->pixels=(size_t)w*h;coverage->reason.resize((size_t)w*h,1);}
+    if(std::all_of(f.triangles.begin(),f.triangles.end(),[](const auto& t){return t.source==t.target;})&&!f.triangles.empty()) {
+        corrected=original;
+        size_t masked=0;
+        for(size_t k=0;k<mask.size();++k) {
+            mask[k]=original_mask.empty()?255:original_mask[k];masked+=!mask[k];
+            if(!mask[k])for(int c=0;c<3;++c)corrected[3*k+c]=0;
+            if(coverage)coverage->reason[k]=mask[k]?0:2;
+        }
+        if(coverage){coverage->covered=mask.size();coverage->masked=masked;}
+        return;
+    }
     const double ax=(double)w/f.width,ay=(double)h/f.height;
     size_t covered=0,masked=0;
 #pragma omp parallel for schedule(dynamic) reduction(+:covered,masked)
@@ -79,7 +105,7 @@ void resample(const std::vector<uint8_t>& original,int w,int h,const std::vector
         }
         if(coverage)coverage->reason[p]=0;
         const int ix=(int)std::floor(qx)-2,iy=(int)std::floor(qy)-2;double wx[6],wy[6],sum[3]={},total=0;
-        for(int i=0;i<6;++i){wx[i]=lanczos_detail::kernel(qx-ix-i);wy[i]=lanczos_detail::kernel(qy-iy-i);}
+        lanczos_weights(qx-std::floor(qx),wx);lanczos_weights(qy-std::floor(qy),wy);
         for(int j=0;j<6;++j)for(int i=0;i<6;++i) {
             const int xx=ix+i,yy=iy+j;const double v=wx[i]*wy[j];
             if(xx<0||yy<0||xx>=w||yy>=h||(!original_mask.empty()&&!original_mask[(size_t)yy*w+xx]))continue;
