@@ -16,6 +16,7 @@ std::vector<std::array<float,2>> smooth_residual(const Field& field,
     const std::vector<std::array<float,4>>& structure);
 void limit_residual(Field& field,const std::vector<std::array<float,2>>& baseline);
 struct LineConstraint {
+    std::array<float,2> center{};
     std::array<size_t,12> nodes{};
     std::array<float,12> coefficients{};
     std::array<float,2> normal{};

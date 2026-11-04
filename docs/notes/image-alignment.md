@@ -133,6 +133,23 @@ normal-only camera constraints, with depth taken from nearby opaque, locally
 stable rendered support. Their weights are reduced if the fit damages the
 held-out interior matches. Separate edge locations are reserved for validation.
 
+After the existing camera stages, one small rigid update can use the latest render
+and its depth directly. Normalized 7-by-7 image patches optimize six pose parameters;
+locally stable depth and source masks filter support. The squared ratio of median
+range to sample range, capped to 0.25..64, prioritizes close detail without depending
+on world units. Separate held-out patches must improve. Proposals are limited to
+three working pixels at the sampled locations and ten optimizer iterations.
+Detected straight segments in the source photo provide a separate structural
+validation group. An actual splat render must improve either independently sampled,
+depth-weighted foreground agreement or held-out source-line agreement by 0.0005
+NCC, while losing at most 0.001 in either supported group or the full-resolution
+image score. The low-pass tolerance is normally 0.001. It can reach 0.005 only
+when the full-resolution score gains more than 0.001, both supported foreground
+groups improve, and at least one gains more than 0.005. This gives a clearly
+supported fine alignment priority over a small low-frequency appearance loss. Rejection leaves the previous pose intact. This adds at most one
+render per view and one RoMa pass only when that pose is accepted; the final warp
+always uses matches against the final camera. It does not iterate without a bound.
+
 Every candidate is rendered from the splat and compared with the photograph on
 common patches at fine and coarse scales. Image validation requires mean NCC
 gain above 0.001 without degrading either scale by more than 0.001, with at least
@@ -285,6 +302,18 @@ blend toward the same model, so they cannot bypass the bound. Conservative retri
 also retain it. Larger interior matching errors remain visible instead of being
 hidden with arbitrary local deformation. Image agreement can therefore be lower
 than an unconstrained warp while source geometry is better preserved.
+
+The resampled residual image must also preserve depth-weighted foreground patch
+agreement (at least 32 patches, at most 0.001 NCC loss). This check is independent
+of the whole-image improvement test: a better background cannot authorize a worse
+foreground. Held-out source-line patches have a separate non-regression check
+(at least 12 patches, the same 0.001 tolerance), so nearby foliage cannot conceal
+movement of an already aligned structural edge. Source-line detection is shared
+with the bending constraints, and its audit locations are prepared once per photo.
+The conservative retry uses the same checks. If both fail, source pixels
+are retained with any accepted camera correction. Review metrics include
+`foreground_count`, `foreground_before`, `foreground_after` and the corresponding
+`structure_*` fields; candidate gains remain available when a warp is rejected.
 
 `--warp-only` retains the separate free-form image-registration mode for input
 cameras that have not undergone this refinement. No new option is needed for
@@ -469,6 +498,11 @@ input provenance. `--render-only` stops after rendering. Repeated corrections
 always start from untouched source photographs.
 
 ## Verification
+
+`image_alignment_micro_test` checks subpixel rigid corrections across depth layers,
+world-unit invariance, already aligned and masked inputs, and separate foreground
+and source-line regression detection. These controlled fixtures do not establish
+camera accuracy on arbitrary reconstructed scenes.
 
 `image_alignment_test` checks source-area conservation, foreground/background
 motion, known occlusion gaps, zero false holes with missing confidence/depth or

@@ -40,6 +40,8 @@ const char* camera_fit_status(CameraFitStatus status);
 struct CameraPolish {
     Sim3 correction;
     double geometry_error = 0;
+    double image_gain = 0, max_movement = 0;
+    size_t samples = 0;
     bool candidate = false;
 };
 
@@ -95,6 +97,16 @@ struct CameraAudit {
 };
 CameraAudit audit_camera(const Image& photo, const Image& before, const Image& after,
                          const std::vector<uint8_t>& mask = {});
+Audit audit_foreground(const Image& reference, const Image& before, const Image& after,
+                       const std::vector<float>& depth, const std::vector<float>& opacity,
+                       const std::vector<uint8_t>& mask = {});
+std::vector<std::array<float,2>> structure_points(const Image& source,const std::vector<uint8_t>& mask = {});
+Audit audit_structure(const Image& reference,const Image& before,const Image& after,
+                      const std::vector<std::array<float,2>>& points,const std::vector<uint8_t>& mask = {});
+bool accept_camera_micro(const CameraAudit& image,const Audit& foreground,const Audit& structure);
+CameraPolish polish_camera(const Image& photo, const Image& render,
+                          const std::vector<float>& depth, const std::vector<float>& opacity,
+                          const camhost::Camera& camera, const std::vector<uint8_t>& mask = {});
 
 struct MatchAudit {
     bool accepted = false;

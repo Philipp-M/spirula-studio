@@ -46,7 +46,7 @@ std::vector<LineConstraint> straight_lines(const Field& f,const std::vector<floa
         const float tx=-ny+nx*slope,ty=nx+ny*slope,length=std::hypot(tx,ty);
         const float extent=span+(supplemental?std::min(f.spacing,8):0);
         for(bool derivative:{false,true}) {
-            LineConstraint line;line.relative=derivative;
+            LineConstraint line;line.relative=derivative;line.center={px+nx*intercept,py+ny*intercept};
             if(derivative) {
                 const float x=2*px/f.width-1,y=2*py/f.height-1;
                 const float radius=.5f*(x*x+y*y);
